@@ -117,3 +117,4 @@ Common scenarios and diagnostics:
 - **`Wrong Service`**: Another application is using port 5600. Update `base_url` in FlowGuard config to match ActivityWatch's port.
 - **`Degraded (STALE)`**: ActivityWatch server is active, but the window watcher has paused or terminated. Check Task Manager to confirm `aw-watcher-window.exe` is running.
 - **`Auth Required`**: Authentication is enabled on ActivityWatch. Set the `FLOWGUARD_ACTIVITYWATCH_API_KEY` environment variable.
+

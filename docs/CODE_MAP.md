@@ -20,11 +20,13 @@ This document serves as the primary developer reference for navigating and maint
 | **Source health definitions** | [`src/domain/source_health.rs`](file:///d:/FlowGuardAG/src/domain/source_health.rs) | `SourceHealth` |
 | **Polling orchestration & change detection** | [`src/application/activity_service.rs`](file:///d:/FlowGuardAG/src/application/activity_service.rs) | `ActivityService::observe`, `run_doctor` |
 | **CLI command implementations & output format** | [`src/presentation/console.rs`](file:///d:/FlowGuardAG/src/presentation/console.rs) | `print_doctor_report`, `print_observation_change` |
+| **Unicode-safe text truncation** | [`src/presentation/truncate.rs`](file:///d:/FlowGuardAG/src/presentation/truncate.rs) | `truncate_str`, `truncate_to_width`, `truncate_to_graphemes` |
 | **CLI arguments & argument parsing** | [`src/main.rs`](file:///d:/FlowGuardAG/src/main.rs) | `struct Cli`, `enum Commands` |
 | **Configuration schema & validation** | [`src/config.rs`](file:///d:/FlowGuardAG/src/config.rs) | `FlowGuardConfig`, `ActivityWatchConfig` |
 | **Example configuration file** | [`config/flowguard.example.toml`](file:///d:/FlowGuardAG/config/flowguard.example.toml) | TOML template |
 | **Mock integration tests (18 scenarios)** | [`tests/mock_scenarios.rs`](file:///d:/FlowGuardAG/tests/mock_scenarios.rs) | `test_01_*` through `test_18_*` |
 | **Domain mapper unit tests** | [`tests/domain_mapper_tests.rs`](file:///d:/FlowGuardAG/tests/domain_mapper_tests.rs) | `test_freshness_*`, `test_map_*` |
+| **Unicode truncation regression tests (15 tests)** | [`tests/unicode_truncation_tests.rs`](file:///d:/FlowGuardAG/tests/unicode_truncation_tests.rs) | `test_01_*` through `test_15_*` |
 | **Live ActivityWatch integration test** | [`tests/real_integration_test.rs`](file:///d:/FlowGuardAG/tests/real_integration_test.rs) | `test_real_activitywatch_integration_read_only` |
 
 ---
@@ -53,6 +55,8 @@ Contains external service adapters.
 ### `src/presentation/`
 Translates domain models into terminal user interface views.
 - `console.rs`: Formats `doctor` diagnostics, `status` badges, `observe --once` cards, and compact streaming logs.
+- `truncate.rs`: Reusable panic-free Unicode-aware truncation utilities (`truncate_str`, `truncate_to_width`, `truncate_to_graphemes`) respecting grapheme clusters and terminal column widths.
 
 ### `src/config.rs`
 Loads, parses, and validates user configuration files from candidate locations (%APPDATA%, local directory, or CLI flags).
+

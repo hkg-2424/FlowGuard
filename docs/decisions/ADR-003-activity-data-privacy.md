@@ -18,3 +18,4 @@ FlowGuard adheres to a strict **100% local-first data processing** architecture:
 ## Consequences
 - **Positive**: Complete user trust, zero risk of remote data breaches, and zero external compliance burden.
 - **Negative**: Syncing across multiple machines requires future local-network or encrypted peer-to-peer mechanisms rather than simple cloud logins.
+

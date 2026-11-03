@@ -38,3 +38,4 @@ FlowGuard exists to distinguish **productive context-switching within an intende
 
 4. **Zero-Overhead Engineering**  
    FlowGuard is written in high-performance Rust. It runs quietly in the background without hogging CPU cycles, memory, or battery life.
+

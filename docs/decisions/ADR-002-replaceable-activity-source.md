@@ -27,3 +27,4 @@ Rules:
 - **Positive**: Clean separation of concerns following SOLID principles.
 - **Positive**: Future native Windows implementation requires zero changes to the core domain, workflow engine, or UI.
 - **Positive**: Simplifies automated testing by allowing mock adapters.
+

@@ -50,3 +50,4 @@ FlowGuard was compiled in release mode (`cargo build --release`) and executed us
 3. **Selective Querying (`limit=1`)**: FlowGuard never requests or downloads the historical event database. It queries strictly one event per bucket.
 4. **Cached Bucket Metadata**: Bucket discovery runs only during connection handshake or reconnection; the 1Hz polling loop does not query `/api/0/buckets/`.
 5. **Smart Change Detection**: Terminal output and event notifications only fire when application, title, idle status, or health actually changes, eliminating terminal flicker and stdout buffer saturation.
+

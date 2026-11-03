@@ -24,3 +24,4 @@ $avgMemory = ($samples | Measure-Object -Property WorkingSetMB -Average).Average
 $deltaCpu = $samples[-1].CpuTotalSec - $samples[0].CpuTotalSec
 Write-Host "Average Working Set: $([math]::Round($avgMemory, 2)) MB"
 Write-Host "CPU Time consumed during 5s observation: $deltaCpu seconds (< 0.05% CPU)"
+

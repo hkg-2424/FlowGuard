@@ -42,3 +42,4 @@ FlowGuard does **NOT**:
 - **Query Redaction**: In streaming console mode, sensitive URL query parameters (e.g., authentication tokens or search parameters) are automatically sanitized unless `--verbose` is explicitly specified.
 - **Safe Truncation**: Overly long window titles that might inadvertently contain sensitive file paths or documents are truncated in standard views.
 - **Secrets Protection**: Optional API keys for ActivityWatch are read from the environment and are never logged or stored in plaintext.
+

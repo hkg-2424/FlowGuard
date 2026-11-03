@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-11-03
 
-### Added
+### Fixed
+- **Unicode Console Crash Fix**: Replaced byte slicing (`&text[..limit]`) with a Unicode-safe, grapheme-cluster-aware text truncation utility in `src/presentation/truncate.rs` using `unicode-segmentation` and `unicode-width`. Fixes runtime panic when encountering 4-byte mathematical Unicode characters (e.g., `'𝒍'`), emojis, and non-ASCII text.
+- **URL Query Splitting**: Replaced manual byte slicing in `sanitize_url` with `split_once('?')`.
+- **Observation Reliability**: Documented and verified separation of concerns between user idle states (`Active`, `Afk`, `Unknown`) and watcher operational health (`Connected`, `Degraded`).
+- **Regression Suite**: Added `tests/unicode_truncation_tests.rs` with 15 test cases covering ASCII, mathematical Unicode, multi-codepoint emojis, accented letters, CJK/Devanagari/Arabic/Cyrillic scripts, combining diacritics, and boundary conditions.
 - **Milestone 1 — ActivityWatch Integration Foundation**:
   - `ActivitySource` trait in `application/ports.rs` providing an activity observation contract for ActivityWatch and future native Windows monitoring.
   - Domain models: `ActivityObservation`, `BrowserContext`, `IdleState`, `FreshnessState`, `ActivityCapabilities`, and `SourceHealth`.
@@ -27,3 +31,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 18 mock HTTP integration tests covering edge cases, timeouts, port conflicts, auth errors, and reconnects.
     - 1 read-only live integration test.
   - Documentation suite including Architecture, Code Map, Integration Guide, Privacy Guarantee, Benchmarks, Acceptance Criteria, and ADRs (001-003).
+

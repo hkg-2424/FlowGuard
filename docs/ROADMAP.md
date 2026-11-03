@@ -62,3 +62,4 @@ This roadmap defines the iterative development stages of FlowGuard. Milestones m
   - Windows UI Automation / Accessibility for browser title tracking.
   - Windows `GetLastInputInfo` for high-precision idle detection.
 - Seamless drop-in replacement: `NativeWindowsAdapter` implements the identical `ActivitySource` trait created in M1, allowing FlowGuard to operate with zero external dependencies.
+

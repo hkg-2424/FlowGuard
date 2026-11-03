@@ -12,3 +12,4 @@ pub use domain::{
     SourceHealth,
 };
 pub use infrastructure::activitywatch::ActivityWatchAdapter;
+pub use presentation::truncate::{truncate_str, truncate_to_graphemes, truncate_to_width};

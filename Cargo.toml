@@ -18,6 +18,8 @@ clap = { version = "4.5", features = ["derive"] }
 thiserror = "2.0"
 ctrlc = "3.4"
 dirs = "5.0"
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.3"
 
 [dev-dependencies]
 wiremock = "0.6"

@@ -1,6 +1,7 @@
 use chrono::Local;
 use std::io::Write;
 
+use super::truncate::truncate_str;
 use crate::application::DoctorReport;
 use crate::domain::{
     ActivityCapabilities, ActivityObservation, FreshnessState, IdleState, SourceHealth,
@@ -208,10 +209,10 @@ pub fn print_observation_snapshot(obs: &ActivityObservation, verbose: bool) {
 
     let title_display = match &obs.window_title {
         Some(title) => {
-            if verbose || title.len() <= 60 {
+            if verbose {
                 title.clone()
             } else {
-                format!("{}...", &title[..57])
+                truncate_str(title, 60)
             }
         }
         None => "[Unavailable]".to_string(),
@@ -224,16 +225,26 @@ pub fn print_observation_snapshot(obs: &ActivityObservation, verbose: bool) {
                 if verbose {
                     u.clone()
                 } else {
-                    sanitize_url(u)
+                    let sanitized = sanitize_url(u);
+                    truncate_str(&sanitized, 60)
                 }
             }
             None => "[Not reported]".to_string(),
         };
         println!("Browser URL:     {}", url_display);
-        println!(
-            "Browser Tab:     {}",
-            browser.title.as_deref().unwrap_or("[Not reported]")
-        );
+
+        let browser_title_display = match &browser.title {
+            Some(t) => {
+                if verbose {
+                    t.clone()
+                } else {
+                    truncate_str(t, 60)
+                }
+            }
+            None => "[Not reported]".to_string(),
+        };
+        println!("Browser Tab:     {}", browser_title_display);
+
         println!(
             "Audio Playing:   {}",
             browser
@@ -282,18 +293,23 @@ pub fn print_observation_change(obs: &ActivityObservation, verbose: bool) {
 
     let title = match &obs.window_title {
         Some(t) => {
-            if verbose || t.len() <= 40 {
-                t.as_str()
+            if verbose {
+                t.clone()
             } else {
-                &t[..37]
+                truncate_str(t, 40)
             }
         }
-        None => "-",
+        None => "-".to_string(),
     };
 
     let browser_info = if let Some(ref b) = obs.browser {
         if let Some(ref u) = b.url {
-            let display_url = if verbose { u.clone() } else { sanitize_url(u) };
+            let display_url = if verbose {
+                u.clone()
+            } else {
+                let sanitized = sanitize_url(u);
+                truncate_str(&sanitized, 60)
+            };
             format!(" | url: {}", display_url)
         } else {
             String::new()
@@ -317,9 +333,8 @@ pub fn print_observation_change(obs: &ActivityObservation, verbose: bool) {
 
 /// Sanitizes a URL for privacy by displaying domain and path prefix, omitting sensitive query params.
 fn sanitize_url(url: &str) -> String {
-    if let Some(pos) = url.find('?') {
-        format!("{}?[query-redacted]", &url[..pos])
-    } else {
-        url.to_string()
+    match url.split_once('?') {
+        Some((base, _)) => format!("{}?[query-redacted]", base),
+        None => url.to_string(),
     }
 }

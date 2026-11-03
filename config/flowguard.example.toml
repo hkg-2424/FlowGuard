@@ -37,3 +37,4 @@ api_key_env = "FLOWGUARD_ACTIVITYWATCH_API_KEY"
 # window_bucket = "aw-watcher-window_GRAVITY"
 # afk_bucket = "aw-watcher-afk_GRAVITY"
 # web_bucket = "aw-watcher-web-chrome_GRAVITY"
+

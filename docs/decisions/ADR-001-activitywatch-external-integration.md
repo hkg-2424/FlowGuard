@@ -26,3 +26,4 @@ FlowGuard shall NOT:
 - **Positive**: Strict decoupling protects FlowGuard from external implementation details.
 - **Negative**: User must install and run ActivityWatch separately for M1.
 - **Mitigation**: If ActivityWatch is unreachable, FlowGuard clearly reports disconnection and guidance rather than crashing or pretending to monitor.
+

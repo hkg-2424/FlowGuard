@@ -6,13 +6,14 @@ This document describes the automated test architecture and verification procedu
 
 ## 1. Test Architecture
 
-The test suite is structured into three layers to guarantee independence from live environments:
+The test suite is structured into four layers to guarantee independence from live environments:
 
 ```text
 tests/
-├── domain_mapper_tests.rs   # Pure unit tests for event normalization & freshness logic
-├── mock_scenarios.rs        # WireMock integration tests covering all 18 network/service scenarios
-└── real_integration_test.rs # Optional read-only validation against a live ActivityWatch instance
+├── domain_mapper_tests.rs        # Pure unit tests for event normalization & freshness logic (9 tests)
+├── mock_scenarios.rs             # WireMock integration tests covering all 18 network/service scenarios (18 tests)
+├── unicode_truncation_tests.rs   # Regression tests for Unicode-safe truncation & display width (15 tests)
+└── real_integration_test.rs      # Optional read-only validation against a live ActivityWatch instance (1 test)
 ```
 
 ---
@@ -44,7 +45,29 @@ All 18 required scenarios are verified using an isolated local HTTP mock server 
 
 ---
 
-## 3. Running the Test Suite
+## 3. Unicode Truncation Regression Suite (`tests/unicode_truncation_tests.rs`)
+
+A 15-test suite verifying panic-free string truncation across varied international and special Unicode text:
+
+1. **Ordinary ASCII Text**: Verifies standard length bounding and ellipsis attachment.
+2. **Mathematical Unicode Characters**: Verifies 4-byte mathematical scripts (`'𝒍'` U+1D4C1, `𝒳`).
+3. **Emoji Support**: Tests single emoji, multi-codepoint ZWJ emoji sequences (`👨‍👩‍👧‍👦`), and regional indicator flags (`🇺🇸`).
+4. **Accented Characters**: Tests precomposed European diacritics (`é`, `ü`, `ï`).
+5. **Non-English Scripts**: Tests CJK double-width ideographs (Japanese kana/kanji), Hindi Devanagari conjuncts, Arabic RTL text, and Cyrillic.
+6. **Combining Accents**: Tests decomposed characters (e.g. `e` + `\u{0301}`) ensuring accents are never separated from base glyphs.
+7. **Zero-Length Strings**: Verifies empty string edge cases without index errors.
+8. **Under-Limit Strings**: Verifies text shorter than limit is returned intact without ellipsis.
+9. **Exact-Limit Strings**: Verifies text matching limit exactly is returned without truncation.
+10. **Over-Limit Strings**: Verifies content is truncated to reserve room for ellipsis.
+11. **Boundary Alignments**: Verifies wide 2-column characters sitting at the truncation boundary are not split.
+12. **Sub-Ellipsis Limits**: Verifies limits 0, 1, 2, 3 where max width is less than ellipsis width.
+13. **Exact Crash Reproduction**: Reconstructs the exact byte index 37 crash scenario (`34 ASCII bytes + '𝒍'`), proving the old byte slicing logic panics while the new implementation succeeds.
+14. **Grapheme Cluster Truncation**: Verifies cluster-based count truncation.
+15. **Presentation End-to-End Smoke Test**: Verifies `print_observation_change` and `print_observation_snapshot` with extreme titles.
+
+---
+
+## 4. Running the Test Suite
 
 ```powershell
 # Run all automated tests
@@ -67,3 +90,4 @@ cargo test -- --nocapture
 The test in `tests/real_integration_test.rs` automatically detects if a local ActivityWatch server is active at `http://127.0.0.1:5600`.
 - If running: connects, discovers buckets, queries latest activity, and verifies capabilities without writing any data.
 - If not running: cleanly skips without failing the build.
+
