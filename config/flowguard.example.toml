@@ -1,0 +1,39 @@
+# FlowGuard Configuration File
+#
+# Copy this file to:
+#   - Windows: %APPDATA%\flowguard\config.toml
+#   - Or project root: ./flowguard.toml
+#   - Or specify via CLI: flowguard doctor --config path/to/config.toml
+
+[activity_source]
+provider = "activitywatch"
+
+[activity_source.activitywatch]
+# Base URL for the ActivityWatch REST API.
+# Default port is 5600. If ActivityWatch is configured on another port (e.g. 5601), change it here.
+base_url = "http://127.0.0.1:5600"
+
+# How often FlowGuard polls ActivityWatch for the latest activity (in milliseconds).
+poll_interval_ms = 1000
+
+# Maximum wait time for an individual HTTP request (in milliseconds).
+request_timeout_ms = 1500
+
+# Time to wait before attempting to reconnect when ActivityWatch stops or is unreachable (in seconds).
+reconnect_interval_secs = 5
+
+# Staleness threshold (in seconds).
+# If an activity event timestamp + duration is older than this, FlowGuard treats it as Stale.
+stale_after_secs = 15
+
+# Name of the environment variable that contains the ActivityWatch API key (if authentication is enabled).
+# FlowGuard will read this variable; it does NOT log or store the key in plaintext.
+api_key_env = "FLOWGUARD_ACTIVITYWATCH_API_KEY"
+
+# Optional explicit bucket overrides.
+# FlowGuard discovers buckets dynamically based on event types and local hostname.
+# Use these overrides only if your setup has multiple conflicting watchers.
+# [activity_source.activitywatch.bucket_overrides]
+# window_bucket = "aw-watcher-window_GRAVITY"
+# afk_bucket = "aw-watcher-afk_GRAVITY"
+# web_bucket = "aw-watcher-web-chrome_GRAVITY"
