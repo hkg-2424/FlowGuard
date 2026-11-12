@@ -57,6 +57,10 @@ pub struct ActivityWatchConfig {
     pub reconnect_interval_secs: u64,
     /// Staleness threshold in seconds for observations (default: 15).
     pub stale_after_secs: u64,
+    /// AFK inactivity timeout in seconds (default: 180).
+    /// ActivityWatch aw-watcher-afk defaults to 180s (3 minutes) before declaring AFK.
+    /// During this window, periods without input are valid reading/thinking pauses and do not indicate AFK or staleness.
+    pub afk_timeout_secs: u64,
     /// Environment variable name holding the optional API key (default: FLOWGUARD_ACTIVITYWATCH_API_KEY).
     pub api_key_env: Option<String>,
     /// Optional overrides for specific bucket IDs.
@@ -71,6 +75,7 @@ impl Default for ActivityWatchConfig {
             request_timeout_ms: 1500,
             reconnect_interval_secs: 5,
             stale_after_secs: 15,
+            afk_timeout_secs: 180,
             api_key_env: Some("FLOWGUARD_ACTIVITYWATCH_API_KEY".to_string()),
             bucket_overrides: None,
         }
@@ -122,6 +127,13 @@ impl FlowGuardConfig {
             return Err(ConfigError::ValidationError(format!(
                 "stale_after_secs ({}) must be at least 1 second.",
                 aw.stale_after_secs
+            )));
+        }
+
+        if aw.afk_timeout_secs < 10 {
+            return Err(ConfigError::ValidationError(format!(
+                "afk_timeout_secs ({}) is too small. Minimum is 10 seconds.",
+                aw.afk_timeout_secs
             )));
         }
 
@@ -203,5 +215,20 @@ impl FlowGuardConfig {
         let default_config = FlowGuardConfig::default();
         default_config.validate()?;
         Ok((default_config, None))
+    }
+}
+
+/// Returns the standard path to the local SQLite database file.
+///
+/// On Windows: `%APPDATA%\flowguard\flowguard.db`
+/// On macOS/Linux: `~/.local/share/flowguard/flowguard.db`
+pub fn default_database_path() -> PathBuf {
+    if let Some(mut data_dir) = dirs::data_dir() {
+        data_dir.push("flowguard");
+        let _ = std::fs::create_dir_all(&data_dir);
+        data_dir.push("flowguard.db");
+        data_dir
+    } else {
+        PathBuf::from("flowguard.db")
     }
 }

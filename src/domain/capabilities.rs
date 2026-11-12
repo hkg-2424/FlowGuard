@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Capabilities reflect what the active activity source can currently observe.
 /// These are dynamically determined from available buckets and event data,
 /// rather than assuming features exist simply because the source is connected.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ActivityCapabilities {
     /// True if the active window's application/process name can be tracked.
     pub application_tracking: bool,

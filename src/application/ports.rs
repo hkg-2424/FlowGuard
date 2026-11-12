@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::domain::{ActivityObservation, SourceCapabilities, SourceHealth};
+use crate::domain::{ActivityObservation, DiagnosticReport, SourceCapabilities, SourceHealth};
 
 /// High-level errors originating from an activity source implementation.
 #[derive(Debug, Error)]
@@ -86,4 +86,66 @@ pub trait ActivitySource: Send {
 
     /// Returns the current operational health of the activity source.
     fn health(&self) -> SourceHealth;
+
+    /// Performs deep provider-specific diagnostics and returns a structured,
+    /// provider-neutral diagnostic report for the `flowguard doctor` command.
+    fn diagnose(&mut self) -> Result<DiagnosticReport, SourceError>;
+}
+
+/// High-level errors originating from repository operations.
+#[derive(Debug, Error)]
+pub enum RepositoryError {
+    #[error("Entity not found: {0}")]
+    NotFound(String),
+
+    #[error("Persistence error: {0}")]
+    Storage(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
+}
+
+/// Port for persisting and loading workflow definitions and their policy rules.
+pub trait WorkflowRepository: Send + Sync {
+    /// Retrieves a workflow definition by its unique identifier.
+    fn get(
+        &self,
+        id: &crate::domain::WorkflowId,
+    ) -> Result<Option<crate::domain::Workflow>, RepositoryError>;
+
+    /// Saves or updates a workflow definition.
+    fn save(&mut self, workflow: &crate::domain::Workflow) -> Result<(), RepositoryError>;
+
+    /// Lists all stored workflows.
+    fn list(&self) -> Result<Vec<crate::domain::Workflow>, RepositoryError>;
+
+    /// Deletes a workflow definition by ID, returning true if it existed.
+    fn delete(&mut self, id: &crate::domain::WorkflowId) -> Result<bool, RepositoryError>;
+}
+
+/// Port for persisting session states, accounting metrics, and drift resolution logs.
+pub trait SessionRepository: Send + Sync {
+    /// Retrieves a session record by its unique identifier.
+    fn get(
+        &self,
+        id: &crate::domain::SessionId,
+    ) -> Result<Option<crate::domain::WorkflowSession>, RepositoryError>;
+
+    /// Saves or updates an active or completed workflow session.
+    fn save(&mut self, session: &crate::domain::WorkflowSession) -> Result<(), RepositoryError>;
+
+    /// Logs an individual drift episode (both sub-30s self-corrections and post-30s interventions).
+    fn record_drift(&mut self, drift: &crate::domain::DriftEvent) -> Result<(), RepositoryError>;
+
+    /// Retrieves all drift events recorded for a given session.
+    fn list_drifts(
+        &self,
+        session_id: &crate::domain::SessionId,
+    ) -> Result<Vec<crate::domain::DriftEvent>, RepositoryError>;
+
+    /// Lists recent workflow sessions ordered by start time descending.
+    fn list_recent(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::domain::WorkflowSession>, RepositoryError>;
 }

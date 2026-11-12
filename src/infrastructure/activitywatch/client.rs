@@ -1,7 +1,7 @@
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::StatusCode;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::models::{AwRawEvent, BucketMap, ServerInfo};
 use crate::application::ports::SourceError;
@@ -19,8 +19,16 @@ pub struct ActivityWatchClient {
 }
 
 impl ActivityWatchClient {
-    /// Creates a new ActivityWatch client with the specified configuration.
-    pub fn new(base_url: &str, timeout_ms: u64, api_key_env: Option<&str>) -> Self {
+    /// Creates a new ActivityWatch client with the specified configuration, returning a [`SourceError`]
+    /// if the underlying HTTP client cannot be constructed with the configured timeout.
+    ///
+    /// This strictly prevents silently discarding configured timeout bounds or falling back
+    /// to an unconstrained connection.
+    pub fn try_new(
+        base_url: &str,
+        timeout_ms: u64,
+        api_key_env: Option<&str>,
+    ) -> Result<Self, SourceError> {
         let normalized_base = base_url.trim_end_matches('/').to_string();
 
         let api_key = api_key_env.and_then(|env_var| match std::env::var(env_var) {
@@ -37,20 +45,29 @@ impl ActivityWatchClient {
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
-            .unwrap_or_else(|e| {
-                warn!(
-                    "Failed to configure HTTP client with timeout, falling back to default: {}",
-                    e
-                );
-                Client::new()
-            });
+            .map_err(|e| {
+                SourceError::Other(format!(
+                    "Failed to configure HTTP client with timeout for '{}': {}",
+                    normalized_base, e
+                ))
+            })?;
 
-        Self {
+        Ok(Self {
             base_url: normalized_base,
             timeout_ms,
             api_key,
             client,
-        }
+        })
+    }
+
+    /// Creates a new ActivityWatch client with the specified configuration.
+    ///
+    /// # Panics:
+    /// Panics if the underlying HTTP client cannot be constructed with the configured timeout.
+    /// For fallible construction, use [`ActivityWatchClient::try_new`].
+    pub fn new(base_url: &str, timeout_ms: u64, api_key_env: Option<&str>) -> Self {
+        Self::try_new(base_url, timeout_ms, api_key_env)
+            .expect("Failed to initialize ActivityWatch HTTP client with configured timeout")
     }
 
     /// Returns the configured base URL.

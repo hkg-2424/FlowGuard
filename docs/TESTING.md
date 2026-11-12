@@ -1,93 +1,105 @@
 # FlowGuard Testing Guide
 
-This document describes the automated test architecture and verification procedures for FlowGuard Milestone 1.
+This document describes the automated test architecture and verification procedures for FlowGuard.
 
 ---
 
 ## 1. Test Architecture
 
-The test suite is structured into four layers to guarantee independence from live environments:
+The test suite is structured into six independent layers:
 
 ```text
 tests/
-├── domain_mapper_tests.rs        # Pure unit tests for event normalization & freshness logic (9 tests)
-├── mock_scenarios.rs             # WireMock integration tests covering all 18 network/service scenarios (18 tests)
+├── diagnostics_tests.rs          # Provider-neutral diagnostics & architecture boundary tests (5 tests)
+├── discovery_tests.rs            # Ambiguous bucket selection & override precedence tests (15 tests)
+├── domain_mapper_tests.rs        # Event normalization, AFK semantics, capability separation & timeouts (30 tests)
+├── mock_scenarios.rs             # WireMock integration tests covering all 24 network/service scenarios (24 tests)
 ├── unicode_truncation_tests.rs   # Regression tests for Unicode-safe truncation & display width (15 tests)
-└── real_integration_test.rs      # Optional read-only validation against a live ActivityWatch instance (1 test)
+└── real_integration_test.rs      # Read-only validation against a live local ActivityWatch instance (1 test)
 ```
 
----
-
-## 2. 18 Mock Integration Scenarios (`tests/mock_scenarios.rs`)
-
-All 18 required scenarios are verified using an isolated local HTTP mock server without depending on an external ActivityWatch installation:
-
-| # | Scenario | Verification Method |
-|---|---|---|
-| **01** | Valid ActivityWatch Server Info | Mocks `/api/0/info` with version `v0.14.1` and hostname; verifies successful handshake and capabilities parsing. |
-| **02** | Unrelated HTTP Service (Wrong Service) | Mocks an unrelated API returning 200 with generic JSON; verifies `SourceError::WrongService` rejection and health state. |
-| **03** | Connection Refused | Connects to an unopened/refused port; verifies `SourceError::ConnectionRefused` and `SourceHealth::Disconnected`. |
-| **04** | Request Timeout | Simulates delayed responses exceeding `request_timeout_ms`; verifies `SourceError::Timeout`. |
-| **05** | Missing Window Bucket | Mocks bucket list omitting `currentwindow`; verifies graceful degradation and `FreshnessState::Missing`. |
-| **06** | Missing AFK Bucket | Mocks bucket list with window only; verifies `IdleState::Unknown` and `capabilities.idle_tracking == false`. |
-| **07** | Missing Browser Bucket | Mocks setup without web extension; verifies `obs.browser == None` without crashing. |
-| **08** | Multiple Matching Buckets | Mocks two window buckets on the same host; verifies diagnostic alert and primary bucket selection. |
-| **09** | Malformed Event JSON | Returns corrupt non-JSON strings; verifies `SerializationError` recovery and missing event fallback. |
-| **10** | Missing Event Fields | Returns event data with empty JSON objects `{}`; verifies safe `None` parsing without panic. |
-| **11** | Stale Window Event | Returns window events with timestamps older than threshold; verifies `FreshnessState::Stale` and suppressed app name. |
-| **12** | Stale Browser Event | Returns browser events with timestamps 1 hour old; verifies `browser == None` and `capabilities.browser_url_tracking == false`. |
-| **13** | Valid Application Event | Returns fresh `code.exe` event with title; verifies normalized fields. |
-| **14** | Valid AFK Event | Returns `status: "afk"`; verifies `IdleState::Afk`. |
-| **15** | Valid Browser Event | Returns YouTube tutorial tab with `audible: true`; verifies `BrowserContext` structure. |
-| **16** | Authorization Error | Returns HTTP 401 Unauthorized; verifies `SourceError::AuthRequired`. |
-| **17** | Custom Configured Port | Verifies connection to custom dynamic ports via configured `base_url`. |
-| **18** | Reconnection After Failure | Simulates server outage followed by recovery; verifies automatic reconnection during polling. |
+**Total automated tests**: **90 passed, 0 failed, 0 ignored**.
 
 ---
 
-## 3. Unicode Truncation Regression Suite (`tests/unicode_truncation_tests.rs`)
+## 2. Provider-Neutral Diagnostics Tests (`tests/diagnostics_tests.rs`)
+
+A 5-test suite verifying the provider-neutral diagnostic model:
+1. `test_01_valid_activitywatch_diagnostic_report`: validates that `ActivityWatchAdapter::diagnose()` produces a clean, provider-neutral `DiagnosticReport` without leaking internal types.
+2. `test_02_unavailable_server_produces_useful_diagnostics`: verifies that connection failures produce a complete report with `is_reachable: false` and actionable troubleshooting advice rather than panicking.
+3. `test_03_unrelated_service_produces_wrong_service_diagnostic`: validates signature verification against non-ActivityWatch services.
+4. `test_04_missing_essential_window_watcher_reported`: verifies that missing window watchers report `SubsystemStatus::Unavailable` with actionable details.
+5. `test_05_mocked_non_activitywatch_source_runs_through_activity_service`: architectural boundary proof demonstrating that `ActivityService::run_doctor()` works transparently with a mocked `NativeWindowsAdapter`.
+
+---
+
+## 3. Bucket Discovery & Ambiguity Tests (`tests/discovery_tests.rs`)
+
+A 15-test suite verifying the strict 5-step bucket selection policy:
+1. `test_01_single_candidate_selection`: exactly one candidate on host is selected cleanly.
+2. `test_02_explicit_valid_override_takes_precedence`: valid configured override supersedes auto-discovery.
+3. `test_03_override_referencing_missing_bucket_fails_cleanly`: override referencing non-existent bucket returns `None` and records diagnostic.
+4. `test_04_override_referencing_wrong_category_fails_cleanly`: override referencing mismatched event category returns `None` and records diagnostic.
+5. `test_05_multiple_candidates_with_one_canonical_bucket_selects_canonical`: multiple candidates on host with exactly one canonical bucket (`aw-watcher-window_{host}`) selects canonical bucket.
+6. `test_06_multiple_canonical_candidates_fails_cleanly`: multiple canonical candidates returns `None` and records diagnostic (never guesses).
+7. `test_07_multiple_non_canonical_candidates_fails_cleanly`: multiple non-canonical candidates returns `None` and records diagnostic (never guesses).
+8. `test_08_deterministic_behavior_across_repeated_runs`: running discovery repeatedly with identical HashMap returns identical results every time.
+9. `test_09_no_matching_candidate`: handles zero matching buckets cleanly.
+10. `test_10_multiple_hosts_filtered_by_server_hostname`: ignores candidates from other hostnames.
+11. `test_11_essential_window_ambiguity`: ambiguous window candidates return `None` and flag degraded source health.
+12. `test_12_essential_afk_ambiguity`: ambiguous AFK candidates return `None` and disable idle tracking.
+13. `test_13_optional_browser_ambiguity`: ambiguous browser candidates return `None` without degrading desktop monitoring.
+14. `test_14_official_aw_watcher_web_supports_incognito`: official client verifies incognito capability.
+15. `test_15_custom_web_client_unknown_incognito_support`: custom browser client safely defaults incognito detection to `false`.
+
+---
+
+## 4. Domain, AFK & Capabilities Test Suite (`tests/domain_mapper_tests.rs`)
+
+A 30-test suite verifying event normalization, AFK duration arithmetic, capability/freshness decoupling, and transport failure differentiation:
+- **AFK Semantics (Tests 01-09)**: Fresh active/afk states, ongoing AFK heartbeats, reading pauses, stale AFK detection, and AFK health invariance.
+- **Browser Isolation (Test 10)**: Stale or missing browser data never degrades healthy desktop monitoring.
+- **Capability Separation**: Verifies that quiescent or stale browser events retain `capabilities.browser_url_tracking == true` while `browser_freshness == FreshnessState::Stale`.
+- **Transport Failure Distinction**:
+  * Window watcher timeout: marked as `FreshnessState::Stale`, health `Degraded`, with timeout duration diagnostic.
+  * Browser watcher timeout: marked as `FreshnessState::Stale`, while desktop health remains `Connected`.
+  * AFK watcher timeout: marked as `IdleState::Unknown`, health `Degraded`.
+  * HTTP 404 missing bucket: distinguished from empty bucket `[]`.
+
+---
+
+## 5. 24 Mock Integration Scenarios (`tests/mock_scenarios.rs`)
+
+All 24 required scenarios verified using an isolated local HTTP mock server (WireMock):
+- Handshake & Server Validation (`test_01`, `test_02`).
+- Network & Transport Failure Modes (`test_03_connection_refused`, `test_04_request_timeout`, `test_16_authorization_error`, `test_17_custom_configured_port`, `test_18_reconnection`, `test_19_http_500`).
+- Bucket Discovery Scenarios (`test_05_missing_window_bucket`, `test_06_missing_afk_bucket`, `test_07_missing_browser_bucket`, `test_08_multiple_matching_buckets_ambiguity`, `test_20_http_404_missing_bucket_triggers_rediscovery`).
+- Partial Failures & Isolation (`test_21_partial_failure_window_fails_afk_succeeds`, `test_22_partial_failure_browser_fails_desktop_healthy`).
+- Event Normalization Scenarios (`test_09_malformed_event_json`, `test_10_missing_event_fields`, `test_11_stale_window_event`, `test_12_stale_browser_event`, `test_13_valid_application_event`, `test_14_valid_afk_event`, `test_15_valid_browser_event`, `test_23_empty_event_response_distinguished_from_timeout`, `test_24_no_stale_window_data_presented_as_current`).
+
+---
+
+## 6. Unicode Truncation Regression Suite (`tests/unicode_truncation_tests.rs`)
 
 A 15-test suite verifying panic-free string truncation across varied international and special Unicode text:
-
-1. **Ordinary ASCII Text**: Verifies standard length bounding and ellipsis attachment.
-2. **Mathematical Unicode Characters**: Verifies 4-byte mathematical scripts (`'𝒍'` U+1D4C1, `𝒳`).
-3. **Emoji Support**: Tests single emoji, multi-codepoint ZWJ emoji sequences (`👨‍👩‍👧‍👦`), and regional indicator flags (`🇺🇸`).
-4. **Accented Characters**: Tests precomposed European diacritics (`é`, `ü`, `ï`).
-5. **Non-English Scripts**: Tests CJK double-width ideographs (Japanese kana/kanji), Hindi Devanagari conjuncts, Arabic RTL text, and Cyrillic.
-6. **Combining Accents**: Tests decomposed characters (e.g. `e` + `\u{0301}`) ensuring accents are never separated from base glyphs.
-7. **Zero-Length Strings**: Verifies empty string edge cases without index errors.
-8. **Under-Limit Strings**: Verifies text shorter than limit is returned intact without ellipsis.
-9. **Exact-Limit Strings**: Verifies text matching limit exactly is returned without truncation.
-10. **Over-Limit Strings**: Verifies content is truncated to reserve room for ellipsis.
-11. **Boundary Alignments**: Verifies wide 2-column characters sitting at the truncation boundary are not split.
-12. **Sub-Ellipsis Limits**: Verifies limits 0, 1, 2, 3 where max width is less than ellipsis width.
-13. **Exact Crash Reproduction**: Reconstructs the exact byte index 37 crash scenario (`34 ASCII bytes + '𝒍'`), proving the old byte slicing logic panics while the new implementation succeeds.
-14. **Grapheme Cluster Truncation**: Verifies cluster-based count truncation.
-15. **Presentation End-to-End Smoke Test**: Verifies `print_observation_change` and `print_observation_snapshot` with extreme titles.
+- Mathematical characters (`'𝒍'`, `𝒳`), emoji (single, ZWJ sequences, flags), accented characters (`é`, `ü`), CJK ideographs, Hindi Devanagari, Arabic RTL, and Cyrillic.
+- Exact reproduction of the byte index 37 crash (`test_13_exact_regression_reproduction`).
 
 ---
 
-## 4. Running the Test Suite
+## 7. Running the Test Suite
 
 ```powershell
 # Run all automated tests
 cargo test
 
-# Run only the domain mapper unit tests
+# Run specific test suites
+cargo test --test diagnostics_tests
+cargo test --test discovery_tests
 cargo test --test domain_mapper_tests
-
-# Run only the mock scenario integration tests
 cargo test --test mock_scenarios
+cargo test --test unicode_truncation_tests
 
-# Run tests with output printed to console
-cargo test -- --nocapture
+# Run clippy check with strict zero warnings
+cargo clippy --all-targets -- -D warnings
 ```
-
----
-
-## 4. Live Real-World Integration Test
-
-The test in `tests/real_integration_test.rs` automatically detects if a local ActivityWatch server is active at `http://127.0.0.1:5600`.
-- If running: connects, discovers buckets, queries latest activity, and verifies capabilities without writing any data.
-- If not running: cleanly skips without failing the build.
-

@@ -15,6 +15,7 @@ fn make_config(base_url: &str) -> ActivityWatchConfig {
         request_timeout_ms: 500,
         reconnect_interval_secs: 1,
         stale_after_secs: 15,
+        afk_timeout_secs: 180,
         api_key_env: None,
         bucket_overrides: None,
     }
@@ -425,7 +426,12 @@ async fn test_09_malformed_event_json() {
         let obs = adapter
             .poll()
             .expect("poll should handle error without crashing");
-        assert_eq!(obs.window_freshness, FreshnessState::Missing);
+        assert_eq!(obs.window_freshness, FreshnessState::Stale);
+        assert_eq!(obs.source_health, SourceHealth::Degraded);
+        assert!(obs
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("Failed to query window watcher")));
     })
     .await
     .unwrap();
@@ -604,7 +610,7 @@ async fn test_12_stale_browser_event() {
         let obs = adapter.poll().expect("poll should succeed");
         assert_eq!(obs.browser_freshness, FreshnessState::Stale);
         assert_eq!(obs.browser, None);
-        assert!(!obs.capabilities.browser_url_tracking);
+        assert!(obs.capabilities.browser_url_tracking);
     })
     .await
     .unwrap();
@@ -967,6 +973,381 @@ async fn test_18_reconnection_after_temporary_disconnection() {
         let obs3 = adapter.poll().expect("poll 3 succeeds after recovery");
         assert_eq!(obs3.application.as_deref(), Some("code.exe"));
         assert_eq!(obs3.window_title.as_deref(), Some("Editor Recovered"));
+    })
+    .await
+    .unwrap();
+}
+
+// 19. HTTP 500 internal server error handling.
+#[tokio::test]
+async fn test_19_http_500_api_error_handling() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hostname": "TESTHOST",
+            "version": "v0.14.1"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "aw-watcher-window_TESTHOST": {
+                "id": "aw-watcher-window_TESTHOST",
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "TESTHOST"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-window_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut adapter = ActivityWatchAdapter::new(make_config(&uri));
+        adapter.connect().expect("connect succeeds");
+
+        let obs = adapter.poll().expect("poll handles 500 without crashing");
+        assert_eq!(obs.window_freshness, FreshnessState::Stale);
+        assert_eq!(obs.source_health, SourceHealth::Degraded);
+        assert!(obs
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("Failed to query window watcher")));
+    })
+    .await
+    .unwrap();
+}
+
+// 20. HTTP 404 missing bucket invalidates reference and triggers rediscovery.
+#[tokio::test]
+async fn test_20_http_404_missing_bucket_triggers_rediscovery() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hostname": "TESTHOST",
+            "version": "v0.14.1"
+        })))
+        .mount(&server)
+        .await;
+
+    // Initial bucket list returns old-bucket
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "aw-watcher-window_TESTHOST": {
+                "id": "aw-watcher-window_TESTHOST",
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "TESTHOST"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    // Old bucket returns 404
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-window_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("Bucket not found"))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut adapter = ActivityWatchAdapter::new(make_config(&uri));
+        adapter.connect().expect("connect succeeds");
+
+        let obs = adapter.poll().expect("poll handles 404 without crashing");
+        assert_eq!(obs.window_freshness, FreshnessState::Missing);
+        assert!(obs
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("was not found in ActivityWatch")));
+    })
+    .await
+    .unwrap();
+}
+
+// 21. Partial failure: window watcher fails while AFK watcher succeeds.
+#[tokio::test]
+async fn test_21_partial_failure_window_fails_afk_succeeds() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hostname": "TESTHOST",
+            "version": "v0.14.1"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "aw-watcher-window_TESTHOST": {
+                "id": "aw-watcher-window_TESTHOST",
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "TESTHOST"
+            },
+            "aw-watcher-afk_TESTHOST": {
+                "id": "aw-watcher-afk_TESTHOST",
+                "type": "afkstatus",
+                "client": "aw-watcher-afk",
+                "hostname": "TESTHOST"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    // Window returns 500
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-window_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    // AFK returns valid active event
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-afk_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "timestamp": Utc::now().to_rfc3339(),
+                "duration": 0.0,
+                "data": { "status": "not-afk" }
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut adapter = ActivityWatchAdapter::new(make_config(&uri));
+        adapter.connect().expect("connect succeeds");
+
+        let obs = adapter.poll().expect("poll handles partial failure");
+        assert_eq!(obs.window_freshness, FreshnessState::Stale);
+        assert_eq!(obs.application, None);
+        // AFK observation is preserved!
+        assert_eq!(obs.idle_freshness, FreshnessState::Fresh);
+        assert_eq!(obs.idle_state, IdleState::Active);
+        // Essential desktop tracking is degraded because window failed
+        assert_eq!(obs.source_health, SourceHealth::Degraded);
+    })
+    .await
+    .unwrap();
+}
+
+// 22. Partial failure: browser watcher fails while desktop tracking is healthy.
+#[tokio::test]
+async fn test_22_partial_failure_browser_fails_desktop_healthy() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hostname": "TESTHOST",
+            "version": "v0.14.1"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "aw-watcher-window_TESTHOST": {
+                "id": "aw-watcher-window_TESTHOST",
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "TESTHOST"
+            },
+            "aw-watcher-afk_TESTHOST": {
+                "id": "aw-watcher-afk_TESTHOST",
+                "type": "afkstatus",
+                "client": "aw-watcher-afk",
+                "hostname": "TESTHOST"
+            },
+            "aw-watcher-web-chrome_TESTHOST": {
+                "id": "aw-watcher-web-chrome_TESTHOST",
+                "type": "web.tab.current",
+                "client": "aw-watcher-web-chrome",
+                "hostname": "TESTHOST"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    // Window returns valid event
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-window_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "timestamp": Utc::now().to_rfc3339(),
+                "duration": 0.0,
+                "data": { "app": "code.exe", "title": "Editor" }
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    // AFK returns valid event
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-afk_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "timestamp": Utc::now().to_rfc3339(),
+                "duration": 0.0,
+                "data": { "status": "not-afk" }
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    // Web returns 500 error
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-web-chrome_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut adapter = ActivityWatchAdapter::new(make_config(&uri));
+        adapter.connect().expect("connect succeeds");
+
+        let obs = adapter
+            .poll()
+            .expect("poll handles partial browser failure");
+        assert_eq!(obs.window_freshness, FreshnessState::Fresh);
+        assert_eq!(obs.idle_freshness, FreshnessState::Fresh);
+        assert_eq!(obs.browser_freshness, FreshnessState::Stale);
+        assert_eq!(obs.browser, None);
+        // Desktop health remains Connected (Healthy)!
+        assert_eq!(obs.source_health, SourceHealth::Connected);
+        assert!(obs
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("Failed to query web watcher")));
+    })
+    .await
+    .unwrap();
+}
+
+// 23. Empty event response is distinguished from transport error.
+#[tokio::test]
+async fn test_23_empty_event_response_distinguished_from_timeout() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hostname": "TESTHOST",
+            "version": "v0.14.1"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "aw-watcher-window_TESTHOST": {
+                "id": "aw-watcher-window_TESTHOST",
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "TESTHOST"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    // Empty event list returns []
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-window_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut adapter = ActivityWatchAdapter::new(make_config(&uri));
+        adapter.connect().expect("connect succeeds");
+
+        let obs = adapter.poll().expect("poll handles empty bucket");
+        assert_eq!(obs.window_freshness, FreshnessState::Missing);
+        assert!(obs
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("has no recorded events yet")));
+        assert!(!obs.diagnostics.iter().any(|d| d.contains("timed out")));
+    })
+    .await
+    .unwrap();
+}
+
+// 24. No stale window data presented as current active observation.
+#[tokio::test]
+async fn test_24_no_stale_window_data_presented_as_current() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "hostname": "TESTHOST",
+            "version": "v0.14.1"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "aw-watcher-window_TESTHOST": {
+                "id": "aw-watcher-window_TESTHOST",
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "TESTHOST"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    // Stale event from 2 hours ago
+    let old_timestamp = Utc::now() - chrono::Duration::hours(2);
+    Mock::given(method("GET"))
+        .and(path("/api/0/buckets/aw-watcher-window_TESTHOST/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "timestamp": old_timestamp.to_rfc3339(),
+                "duration": 0.0,
+                "data": { "app": "code.exe", "title": "Old Code File" }
+            }
+        ])))
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    tokio::task::spawn_blocking(move || {
+        let mut adapter = ActivityWatchAdapter::new(make_config(&uri));
+        adapter.connect().expect("connect succeeds");
+
+        let obs = adapter.poll().expect("poll handles stale event");
+        assert_eq!(obs.window_freshness, FreshnessState::Stale);
+        // Stale app and title must NOT be presented as current
+        assert_eq!(obs.application, None);
+        assert_eq!(obs.window_title, None);
+        assert_eq!(obs.source_health, SourceHealth::Degraded);
     })
     .await
     .unwrap();

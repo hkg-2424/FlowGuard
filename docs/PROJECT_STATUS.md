@@ -1,77 +1,108 @@
-# FlowGuard — Project Status (Milestone 1)
+# FlowGuard — Project Status (Milestone 1.1)
 
-**Current Milestone**: M1 — ActivityWatch Integration Foundation  
+**Current Milestone**: M1.1 — Architectural and Data-Correctness Corrections (Batch 1)
 **Status**: **COMPLETE**  
-**Date**: November 3, 2026
+**Date**: November 4, 2026
 
 ---
 
 ## 1. What Has Been Implemented
 
-1. **Replaceable Activity Source Architecture**:
-   - `ActivitySource` trait in [`src/application/ports.rs`](file:///d:/FlowGuardAG/src/application/ports.rs).
-   - Domain models in [`src/domain/`](file:///d:/FlowGuardAG/src/domain/): `ActivityObservation`, `BrowserContext`, `IdleState`, `FreshnessState`, `ActivityCapabilities`, and `SourceHealth`.
-2. **ActivityWatch Adapter**:
-   - Reusable HTTP client with timeout, port customization, and optional token auth in [`src/infrastructure/activitywatch/client.rs`](file:///d:/FlowGuardAG/src/infrastructure/activitywatch/client.rs).
-   - Server verification via `GET /api/0/info` detecting valid ActivityWatch signatures vs. unrelated services (`WrongService`).
-   - Dynamic bucket discovery in [`src/infrastructure/activitywatch/discovery.rs`](file:///d:/FlowGuardAG/src/infrastructure/activitywatch/discovery.rs) with hostname matching and ambiguity alerts.
-   - Independent watcher freshness engine in [`src/infrastructure/activitywatch/mapper.rs`](file:///d:/FlowGuardAG/src/infrastructure/activitywatch/mapper.rs) calculating event age with duration arithmetic.
-3. **Unicode-Safe Console Presentation & Reliability**:
+1. **Provider-Neutral Diagnostic Abstraction (`ports.rs`, `diagnostics.rs`)**:
+   - Added `fn diagnose(&mut self) -> Result<DiagnosticReport, SourceError>` to `ActivitySource` trait.
+   - Introduced domain models `DiagnosticReport`, `SubsystemDiagnostic`, and `SubsystemStatus` in [`src/domain/diagnostics.rs`](file:///d:/FlowGuardAG/src/domain/diagnostics.rs).
+   - Completely decoupled `ActivityService::run_doctor(&mut self)` from ActivityWatch internals. `run_doctor()` now delegates cleanly to `self.source.diagnose()`.
+   - Updated `print_doctor_report()` in [`src/presentation/console.rs`](file:///d:/FlowGuardAG/src/presentation/console.rs) to display provider-neutral diagnostic reports without leaking ActivityWatch bucket IDs or HTTP concepts into application logic.
+
+2. **Decoupled Capabilities from Freshness (`mapper.rs`, `discovery.rs`)**:
+   - Fixed architectural defect where transiently stale browser events mutated `capabilities.browser_url_tracking` to `false`.
+   - Established invariant: `ActivityCapabilities` reflects structural availability determined during bucket discovery or hardware hook initialization.
+   - Freshness remains tracked independently per channel (`window_freshness`, `idle_freshness`, `browser_freshness`).
+   - If a user switches to a terminal and browser events become stale, `browser_freshness` is `Stale`, but `capabilities.browser_url_tracking` remains `true` (Available).
+
+3. **Safe Bucket Selection Algorithm (`discovery.rs`)**:
+   - Replaced arbitrary `candidates[0]` selection with a strict 5-step policy:
+     1. Valid explicit override (`bucket_overrides` in `flowguard.toml`), validated for existence and category.
+     2. Exactly one candidate matching predicate and host.
+     3. Unique canonical match (`aw-watcher-window_{host}`, `aw-watcher-afk_{host}`, `aw-watcher-web-*_{host}`).
+     4. If ambiguity cannot be resolved, returns `None` (never guesses).
+     5. Emits an explicit diagnostic listing all competing candidates and instructing the user to configure `bucket_overrides`.
+
+4. **Transport Error Differentiation & `WatcherResult` (`mapper.rs`, `mod.rs`)**:
+   - Eliminated masking of HTTP failures as missing events.
+   - Introduced `WatcherResult` enum: `Present(&AwRawEvent)`, `Empty`, `NotConfigured`, `Timeout(u64)`, `MissingBucket(String)`, `FetchError(String)`.
+   - Distinguishes empty buckets (`[]`) from timeouts, 404s, connection failures, 5xx, and serialization errors.
+   - Window watcher timeout marks observation freshness as `Stale` (unreliable observation) and source health as `Degraded` with an explicit latency diagnostic.
+   - Browser watcher timeout marks browser context as unavailable while desktop monitoring remains `Connected`.
+
+5. **Existing M1 Core & Unicode Safety**:
    - Panic-free Unicode text truncation utility in [`src/presentation/truncate.rs`](file:///d:/FlowGuardAG/src/presentation/truncate.rs) using `unicode-segmentation` and `unicode-width`.
-   - Protects console output from byte-slicing panics caused by 4-byte mathematical scripts (e.g. `'𝒍'`), emojis, and double-width CJK characters.
-   - Replaced all byte slicing across the presentation layer.
-4. **Application & CLI**:
-   - `ActivityService` handling polling loops, bounded reconnection backoff, and state change detection.
-   - CLI subcommands:
-     - `flowguard doctor`: Deep diagnostic inspection of endpoint, handshake, buckets, and watcher freshness.
-     - `flowguard status`: Operational health and capabilities summary.
-     - `flowguard observe --once`: Single snapshot output.
-     - `flowguard observe`: Real-time change stream with graceful Ctrl+C shutdown.
-4. **Configuration**:
-   - Hierarchical configuration loader (`--config`, local `flowguard.toml`, `%APPDATA%\flowguard\config.toml`, fallback defaults).
-   - Strict validation preventing invalid URLs or aggressive sub-100ms polling intervals.
+   - Replaceable `ActivitySource` port and ActivityWatch adapter.
 
 ---
 
-## 2. What Has Been Tested
+## 2. Test Suite Status
 
-1. **Automated Unit, Mock & Regression Tests**:
-   - **9 Domain Mapper Unit Tests**: Verified timestamp duration arithmetic, threshold transitions, missing fields, and change detection.
-   - **18 Mock HTTP Integration Tests**: Verified all network failure modes, port conflicts, timeouts, missing buckets, corrupt payloads, and reconnection.
-   - **15 Unicode Truncation Regression Tests**: Verified ASCII, mathematical scripts (`𝒍`), emoji, accented letters, non-English scripts (Japanese, Hindi, Arabic, Cyrillic), combining accents, boundary characters, and exact reproduction of the byte-slicing crash.
-   - **1 Live Integration Test**: Verified read-only integration against running ActivityWatch.
-   - Total automated test suite: **43 passed, 0 failed, 0 ignored**.
-2. **Real-World Live Testing on Windows 11**:
-   - Verified live handshake against local ActivityWatch instance at `http://127.0.0.1:5600`.
-   - Verified observation streaming with applications (`brave.exe`), switching across browser tabs containing mathematical and international Unicode titles without crashing.
-   - **Idle Transition Investigation**: Confirmed that `[?IDLE ] ... (Degraded)` was caused by an initial `Stale` evaluation on startup when the AFK watcher had not yet emitted a heartbeat within the 15s window, which transitioned to `[ACTIVE]` as soon as the fresh heartbeat arrived. Validated that idle status (`Active`/`Afk`/`Unknown`) and source health (`Connected`/`Degraded`) remain strictly separated in domain logic. An AFK user with an active watcher reports `Connected`, not `Degraded`.
-3. **Resource Benchmarks**:
-   - Process Working Set: **14.64 MB** average.
-   - CPU utilization during 1000ms polling: **< 0.05% CPU**.
+The automated test suite has expanded from 57 to **90 tests**, all passing:
+
+1. **Provider-Neutral Diagnostics Tests (`tests/diagnostics_tests.rs`)**: **5 tests**
+   - Valid generic diagnostic report produced by ActivityWatchAdapter.
+   - Unavailable server produces useful diagnostics without panicking.
+   - Unrelated HTTP service produces wrong-service diagnostic.
+   - Missing essential window watcher reported in subsystems.
+   - Mocked non-ActivityWatch `ActivitySource` runs through `ActivityService::run_doctor()`.
+
+2. **Ambiguous Bucket Selection Tests (`tests/discovery_tests.rs`)**: **15 tests**
+   - Single candidate selection.
+   - Explicit valid override precedence.
+   - Explicit override referencing missing bucket.
+   - Explicit override referencing wrong category.
+   - Multiple candidates with one canonical bucket.
+   - Multiple canonical candidates fail cleanly (`None` + diagnostic).
+   - Multiple non-canonical candidates fail cleanly (`None` + diagnostic).
+   - Deterministic discovery behavior across repeated runs.
+   - No matching candidate.
+   - Multiple hosts filtered by server hostname.
+   - Essential window bucket ambiguity.
+   - Essential AFK bucket ambiguity.
+   - Optional browser bucket ambiguity.
+   - Official `aw-watcher-web` incognito detection verification.
+   - Custom web client unknown incognito support verification.
+
+3. **Domain, AFK & Capabilities Tests (`tests/domain_mapper_tests.rs`)**: **30 tests**
+   - AFK state & source health decoupling (all 10 specification scenarios).
+   - Capability independence from freshness (stale browser preserves `capabilities.browser_url_tracking`).
+   - Window watcher timeout marks observation `Stale` and source `Degraded`.
+   - Browser timeout retains desktop health `Connected`.
+   - AFK timeout marks `IdleState::Unknown` and source `Degraded`.
+   - HTTP 404 missing bucket distinguished from empty bucket `[]`.
+
+4. **Mock Integration Scenarios (`tests/mock_scenarios.rs`)**: **24 tests**
+   - Full WireMock coverage of handshake, port conflicts, timeouts, missing buckets, corrupt payloads, reconnection, HTTP 500 API errors, 404 rediscovery, and partial failure isolation.
+
+5. **Unicode Truncation Regression Suite (`tests/unicode_truncation_tests.rs`)**: **15 tests**
+   - Mathematical scripts (`'𝒍'`), emoji sequences, combining accents, CJK, and exact reproduction of the byte-slicing crash.
+
+6. **Live Integration Test (`tests/real_integration_test.rs`)**: **1 test**
+   - Read-only verification against the live local ActivityWatch server.
+
+**Total Test Count**: **90 passed, 0 failed, 0 ignored**.
 
 ---
 
-## 3. Known Limitations (By Design in M1)
+## 3. Real-World Live Verification on Windows 11
 
-- **External Dependency**: ActivityWatch must be manually started by the user. FlowGuard does not manage the lifecycle of `aw-qt` or `aw-server`.
-- **Browser URL Tracking Requires Extension**: If the user does not have `aw-watcher-web` installed in their browser, browser tab URLs are marked as unavailable (`None`), though active application (`chrome.exe`) and window titles are still captured.
-- **No GUI in M1**: All interactions are via the command-line interface.
-
----
-
-## 4. Current ActivityWatch Dependency Summary
-
-- FlowGuard connects to ActivityWatch exclusively via its documented local REST API (`/api/0/info`, `/api/0/buckets/`, `/api/0/buckets/{id}/events`).
-- FlowGuard does **not** read ActivityWatch's SQLite database directly, copy source code, or write events into ActivityWatch.
-- The `ActivitySource` trait completely isolates the domain layer from ActivityWatch schemas.
+- `flowguard.exe doctor`: Handshake succeeded against ActivityWatch v0.14.1 on `GRAVITY`, discovered desktop window and AFK buckets as `Healthy`, web bucket reported as `Unavailable` (not installed), overall health `Connected (Healthy)`.
+- `flowguard.exe status`: Endpoint, Health `Connected`, capabilities correctly summarized.
+- `flowguard.exe observe --once`: Captured live active window (`brave.exe - Optimize AI Plans`), `IdleState::Active`, freshness `Fresh`.
 
 ---
 
-## 5. Next Milestone: M2 — Workflow Engine
+## 4. Next Steps
 
-Milestone 2 will introduce:
-- Workflow definitions: allowed applications, allowed website domains, and specific tutorial/resource URLs.
-- Intent declaration by the user (target duration, active workflow).
-- Workflow matching engine evaluating incoming `ActivityObservation` snapshots against active workflow rules.
-- Distinction between intentional context-switching (e.g. IDE to documentation) and true distractions.
-
+- **Batch 2 Scope** (to be executed upon user review):
+  - URL parser sanitization.
+  - Stepped sleep for responsive Ctrl+C shutdown.
+  - Event duration numerical bounds and clamping.
+- **Milestone 2**:
+  - Workflow engine and focus tracking.

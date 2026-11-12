@@ -117,13 +117,26 @@ impl ActivityObservation {
     /// Determines if there is a meaningful state change between this observation
     /// and a previous observation. This prevents spamming terminal output or downstream
     /// event buses when nothing has changed.
+    ///
+    /// # Checked Properties:
+    /// - Active application name
+    /// - Active window title
+    /// - Idle status (Active, Afk, Unknown)
+    /// - Operational source health (Healthy, Degraded, Disconnected)
+    /// - Freshness of window, AFK/idle, and browser watcher signals
+    /// - Structural capabilities
+    /// - Browser context (URL, tab title, audio, incognito)
+    /// - Active diagnostic messages
     pub fn has_meaningful_change(&self, prev: &ActivityObservation) -> bool {
         self.application != prev.application
             || self.window_title != prev.window_title
             || self.idle_state != prev.idle_state
             || self.source_health != prev.source_health
             || self.window_freshness != prev.window_freshness
+            || self.idle_freshness != prev.idle_freshness
             || self.browser_freshness != prev.browser_freshness
+            || self.capabilities != prev.capabilities
             || self.browser != prev.browser
+            || self.diagnostics != prev.diagnostics
     }
 }

@@ -3,6 +3,7 @@ use tracing::{debug, warn};
 
 use super::models::BucketMetadata;
 use crate::config::BucketOverridesConfig;
+use crate::domain::ActivityCapabilities;
 
 /// Represents the buckets discovered and selected for activity observation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -13,6 +14,8 @@ pub struct DiscoveredBuckets {
     pub afk_bucket: Option<String>,
     /// Bucket recording browser tab activity (`web.tab.current`). Optional.
     pub web_bucket: Option<String>,
+    /// Structural capabilities verified for these discovered buckets.
+    pub capabilities: ActivityCapabilities,
     /// Informational warnings or ambiguity alerts produced during discovery.
     pub diagnostics: Vec<String>,
 }
@@ -27,10 +30,10 @@ impl DiscoveredBuckets {
 /// Discovers and selects the best matching ActivityWatch buckets dynamically.
 ///
 /// Rules:
-/// 1. Prioritize configured explicit overrides if defined.
-/// 2. Match based on ActivityWatch `type` metadata (`currentwindow`, `afkstatus`, `web.tab.current`).
-/// 3. Prefer buckets matching the server's local hostname.
-/// 4. If multiple matching buckets exist on the same host, flag the ambiguity with a diagnostic.
+/// 1. Prioritize configured explicit overrides if defined and valid.
+/// 2. If exactly one candidate matches, select it.
+/// 3. If multiple candidates match on host, check for a unique canonical bucket.
+/// 4. If ambiguity cannot be resolved automatically, do NOT guess. Return None and report diagnostic.
 /// 5. Never hardcode machine-specific bucket IDs.
 pub fn discover_buckets(
     buckets: &HashMap<String, BucketMetadata>,
@@ -51,12 +54,12 @@ pub fn discover_buckets(
 
     if discovered.window_bucket.is_none() {
         discovered.diagnostics.push(
-            "Essential window watcher bucket (type: 'currentwindow') was not found. Window activity cannot be observed."
+            "Essential window watcher bucket (type: 'currentwindow') was not found or is ambiguous. Window activity cannot be observed."
                 .to_string(),
         );
     }
 
-    // 2. Discover AFK Bucket (Optional)
+    // 2. Discover AFK Bucket (Essential for idle tracking)
     discovered.afk_bucket = select_bucket(
         buckets,
         server_hostname,
@@ -68,7 +71,7 @@ pub fn discover_buckets(
 
     if discovered.afk_bucket.is_none() {
         discovered.diagnostics.push(
-            "AFK watcher bucket (type: 'afkstatus') was not found. Idle detection will be marked as Unknown."
+            "AFK watcher bucket (type: 'afkstatus') was not found or is ambiguous. Idle detection will be marked as Unknown."
                 .to_string(),
         );
     }
@@ -91,10 +94,53 @@ pub fn discover_buckets(
         debug!("No web watcher bucket discovered (optional capability).");
     }
 
+    // 4. Derive Structural Capabilities from Discovered & Verified Watchers
+    let web_supports_incognito = if let Some(ref w_id) = discovered.web_bucket {
+        buckets
+            .get(w_id)
+            .map(|m| m.client.starts_with("aw-watcher-web"))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    discovered.capabilities = ActivityCapabilities {
+        application_tracking: discovered.window_bucket.is_some(),
+        window_title_tracking: discovered.window_bucket.is_some(),
+        idle_tracking: discovered.afk_bucket.is_some(),
+        browser_url_tracking: discovered.web_bucket.is_some(),
+        incognito_detection: web_supports_incognito,
+    };
+
     discovered
 }
 
-fn select_bucket<F>(
+/// Identifies whether a bucket matches the canonical ActivityWatch naming pattern for a category.
+pub fn is_canonical_bucket(b: &BucketMetadata, category: &str, hostname: &str) -> bool {
+    let lower_host = hostname.to_ascii_lowercase();
+    let lower_id = b.id.to_ascii_lowercase();
+    match category {
+        "window" => {
+            lower_id == format!("aw-watcher-window_{}", lower_host)
+                && (b.event_type == "currentwindow" || b.client == "aw-watcher-window")
+        }
+        "afk" => {
+            lower_id == format!("aw-watcher-afk_{}", lower_host)
+                && (b.event_type == "afkstatus" || b.client == "aw-watcher-afk")
+        }
+        "web" => {
+            (lower_id == format!("aw-watcher-web_{}", lower_host)
+                || lower_id == format!("aw-watcher-web-chrome_{}", lower_host)
+                || lower_id == format!("aw-watcher-web-firefox_{}", lower_host)
+                || lower_id == format!("aw-watcher-web-brave_{}", lower_host)
+                || lower_id == format!("aw-watcher-web-edge_{}", lower_host))
+                && b.event_type == "web.tab.current"
+        }
+        _ => false,
+    }
+}
+
+pub fn select_bucket<F>(
     buckets: &HashMap<String, BucketMetadata>,
     server_hostname: &str,
     category: &str,
@@ -105,23 +151,36 @@ fn select_bucket<F>(
 where
     F: Fn(&BucketMetadata) -> bool,
 {
-    // Check if an explicit override is configured
+    // 1. Explicit configured bucket override takes precedence after validating metadata
     if let Some(override_id) = explicit_override {
-        if buckets.contains_key(override_id) {
-            debug!(
-                "Using explicit bucket override for {}: '{}'",
-                category, override_id
-            );
-            return Some(override_id.to_string());
+        if let Some(meta) = buckets.get(override_id) {
+            if predicate(meta) {
+                debug!(
+                    "Using valid explicit bucket override for {}: '{}'",
+                    category, override_id
+                );
+                return Some(override_id.to_string());
+            } else {
+                let warning = format!(
+                    "Configured bucket override '{}' for {} exists but does not match expected watcher category (type: '{}', client: '{}'). Override rejected.",
+                    override_id, category, meta.event_type, meta.client
+                );
+                warn!("{}", warning);
+                diagnostics.push(warning);
+                return None;
+            }
         } else {
-            diagnostics.push(format!(
+            let warning = format!(
                 "Configured bucket override '{}' for {} was not found in ActivityWatch bucket list.",
                 override_id, category
-            ));
+            );
+            warn!("{}", warning);
+            diagnostics.push(warning);
+            return None;
         }
     }
 
-    // Find all matching buckets
+    // 2. Find all matching buckets
     let matching: Vec<&BucketMetadata> = buckets.values().filter(|b| predicate(b)).collect();
 
     if matching.is_empty() {
@@ -141,15 +200,38 @@ where
         matching
     };
 
-    if candidates.len() > 1 {
-        let bucket_ids: Vec<String> = candidates.iter().map(|b| b.id.clone()).collect();
-        let warning = format!(
-            "Ambiguity detected: Multiple matching buckets for {} on host '{}': [{}]. Selecting '{}'. Specify an explicit override in flowguard.toml to resolve.",
-            category, server_hostname, bucket_ids.join(", "), candidates[0].id
-        );
-        warn!("{}", warning);
-        diagnostics.push(warning);
+    // Exactly one candidate found
+    if candidates.len() == 1 {
+        return Some(candidates[0].id.clone());
     }
 
-    Some(candidates[0].id.clone())
+    // 3. Multiple candidates: check for unique canonical match
+    let mut candidate_ids: Vec<String> = candidates.iter().map(|b| b.id.clone()).collect();
+    candidate_ids.sort(); // Deterministic sorting
+
+    let canonical_matches: Vec<&BucketMetadata> = candidates
+        .iter()
+        .copied()
+        .filter(|b| is_canonical_bucket(b, category, server_hostname))
+        .collect();
+
+    if canonical_matches.len() == 1 {
+        let selected_id = canonical_matches[0].id.clone();
+        let info = format!(
+            "Ambiguity detected: Multiple candidates for {} on host '{}': [{}]. Resolved by selecting unique canonical bucket '{}'.",
+            category, server_hostname, candidate_ids.join(", "), selected_id
+        );
+        debug!("{}", info);
+        diagnostics.push(info);
+        return Some(selected_id);
+    }
+
+    // 4 & 5. Still ambiguous: do NOT guess! Emit diagnostic listing competing buckets and request override
+    let warning = format!(
+        "Ambiguity detected: Multiple competing buckets for {} on host '{}': [{}]. Ambiguity cannot be resolved automatically. Please specify an explicit override in flowguard.toml under [activity_source.activitywatch.bucket_overrides].",
+        category, server_hostname, candidate_ids.join(", ")
+    );
+    warn!("{}", warning);
+    diagnostics.push(warning);
+    None
 }

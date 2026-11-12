@@ -27,6 +27,7 @@ fn test_real_activitywatch_integration_read_only() {
         request_timeout_ms: 1500,
         reconnect_interval_secs: 5,
         stale_after_secs: 15,
+        afk_timeout_secs: 180,
         api_key_env: None,
         bucket_overrides: None,
     };

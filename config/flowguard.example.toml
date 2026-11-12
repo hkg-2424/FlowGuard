@@ -26,6 +26,11 @@ reconnect_interval_secs = 5
 # If an activity event timestamp + duration is older than this, FlowGuard treats it as Stale.
 stale_after_secs = 15
 
+# AFK inactivity timeout (in seconds).
+# ActivityWatch aw-watcher-afk uses 180s (3 minutes) by default before marking the user AFK.
+# Pauses shorter than this (e.g. reading, thinking) are considered active periods without heartbeat updates.
+afk_timeout_secs = 180
+
 # Name of the environment variable that contains the ActivityWatch API key (if authentication is enabled).
 # FlowGuard will read this variable; it does NOT log or store the key in plaintext.
 api_key_env = "FLOWGUARD_ACTIVITYWATCH_API_KEY"

@@ -1,3 +1,56 @@
 /target
 **/*.rs.bk
 Cargo.lock
+
+# ==========================================
+# Rust build artifacts
+# ==========================================
+/target/
+**/*.rs.bk
+
+# ==========================================
+# Local configuration and secrets
+# ==========================================
+/flowguard.toml
+/config/flowguard.toml
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# Runtime data and databases
+# ==========================================
+/logs/
+/diagnostics/
+/benchmark-results/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.dmp
+
+# ==========================================
+# Generated output
+# ==========================================
+/dist/
+/output/
+
+# ==========================================
+# Windows temporary files
+# ==========================================
+Thumbs.db
+Desktop.ini
+*.lnk
+
+# ==========================================
+# IDE and editor settings
+# ==========================================
+.idea/
+.vs/
+.vscode/
+
+# ==========================================
+# OS files
+# ==========================================
+.DS_Store
+ehthumbs.db
