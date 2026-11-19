@@ -163,7 +163,43 @@ function renderWorkflows(workflows) {
   }).join('');
 }
 
+// -----------------------------------------------------------------------------
+// TOAST NOTIFICATIONS (NON-BLOCKING USER FEEDBACK)
+// -----------------------------------------------------------------------------
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const icon = type === 'success' ? '✓' : type === 'error' ? '⚠️' : 'ℹ️';
+  toast.innerHTML = `<span>${icon}</span><span>${message}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(40px)';
+    toast.style.transition = 'all 0.3s ease';
+    setTimeout(() => toast.remove(), 300);
+  }, 3500);
+}
+
+// -----------------------------------------------------------------------------
+// NOVICE-FRIENDLY WORKFLOW BUILDER: LIVE OPEN APPS & 1-CLICK PRESETS
+// -----------------------------------------------------------------------------
+const selectedApps = new Map();     // key: process_name, value: display_name
+const selectedDomains = new Map();  // key: domain, value: display_name
+let openRunningApps = [];
+
 function openCreateWorkflowModal() {
+  selectedApps.clear();
+  selectedDomains.clear();
+  document.getElementById('new-wf-name').value = '';
+  document.getElementById('new-wf-duration').value = '25';
+  document.getElementById('custom-domain-input').value = '';
+  renderSelectedTags();
+  loadRunningApps();
   document.getElementById('modal-create-workflow').classList.remove('hidden');
 }
 
@@ -171,20 +207,173 @@ function closeCreateWorkflowModal() {
   document.getElementById('modal-create-workflow').classList.add('hidden');
 }
 
+async function loadRunningApps() {
+  const container = document.getElementById('open-apps-chips');
+  if (!container) return;
+  container.innerHTML = '<span class="text-muted text-xs py-1">Scanning open desktop windows...</span>';
+
+  try {
+    const res = await fetch('/api/system/open-apps');
+    if (!res.ok) throw new Error('Could not fetch open applications');
+    openRunningApps = await res.json();
+    renderOpenAppsChips();
+  } catch (err) {
+    console.warn('Error loading open apps:', err);
+    container.innerHTML = '<span class="text-muted text-xs py-1">No visible windows detected (or running in browser mode).</span>';
+  }
+}
+
+function renderOpenAppsChips() {
+  const container = document.getElementById('open-apps-chips');
+  if (!container) return;
+
+  if (!openRunningApps || openRunningApps.length === 0) {
+    container.innerHTML = '<span class="text-muted text-xs py-1">No other active desktop windows found.</span>';
+    return;
+  }
+
+  container.innerHTML = openRunningApps.map(app => {
+    const isSelected = selectedApps.has(app.process_name.toLowerCase());
+    const shortTitle = app.window_title ? ` (${app.window_title.slice(0, 25)}${app.window_title.length > 25 ? '...' : ''})` : '';
+    return `
+      <button type="button" class="chip-preset chip-open-app ${isSelected ? 'selected' : ''}" 
+              onclick="toggleAppTag('${escapeJs(app.process_name)}', '${escapeJs(app.display_name)}')">
+        <span>${isSelected ? '✓' : '+'}</span>
+        <strong>${app.display_name}</strong>
+        <span class="text-muted text-xs">${shortTitle}</span>
+      </button>
+    `;
+  }).join('');
+}
+
+function toggleAppTag(processName, displayName) {
+  const key = processName.toLowerCase();
+  if (selectedApps.has(key)) {
+    selectedApps.delete(key);
+  } else {
+    selectedApps.set(key, displayName || processName);
+  }
+  renderSelectedTags();
+  renderOpenAppsChips();
+}
+
+function toggleDomainTag(domain, displayName) {
+  const key = domain.toLowerCase();
+  if (selectedDomains.has(key)) {
+    selectedDomains.delete(key);
+  } else {
+    selectedDomains.set(key, displayName || domain);
+  }
+  renderSelectedTags();
+}
+
+function addCustomDomain() {
+  const input = document.getElementById('custom-domain-input');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+
+  // Clean domain or extract host from URL
+  let domain = raw.toLowerCase();
+  try {
+    if (domain.startsWith('http://') || domain.startsWith('https://')) {
+      const parsed = new URL(domain);
+      domain = parsed.hostname;
+    } else {
+      domain = domain.split('/')[0].split('?')[0];
+    }
+    domain = domain.replace(/^www\./, '');
+  } catch (_) {
+    domain = domain.split('/')[0].split('?')[0].replace(/^www\./, '');
+  }
+
+  if (domain.length < 3) {
+    showToast('Please enter a valid website domain or URL', 'error');
+    return;
+  }
+
+  selectedDomains.set(domain, domain);
+  input.value = '';
+  renderSelectedTags();
+  showToast(`Added allowed site: ${domain}`, 'success');
+}
+
+function renderSelectedTags() {
+  // 1. Render Apps Tags
+  const appsContainer = document.getElementById('selected-apps-container');
+  if (appsContainer) {
+    if (selectedApps.size === 0) {
+      appsContainer.innerHTML = '<span class="text-muted text-xs">No apps selected yet (will allow all unless specified)</span>';
+    } else {
+      let html = '';
+      selectedApps.forEach((display, proc) => {
+        html += `
+          <span class="selected-tag-pill">
+            <span>💻 ${display}</span>
+            <button type="button" class="tag-remove-btn" onclick="toggleAppTag('${escapeJs(proc)}', '${escapeJs(display)}')">&times;</button>
+          </span>
+        `;
+      });
+      appsContainer.innerHTML = html;
+    }
+  }
+
+  // 2. Render Domains Tags
+  const domainsContainer = document.getElementById('selected-domains-container');
+  if (domainsContainer) {
+    if (selectedDomains.size === 0) {
+      domainsContainer.innerHTML = '<span class="text-muted text-xs">No websites selected (will allow all unless specified)</span>';
+    } else {
+      let html = '';
+      selectedDomains.forEach((display, dom) => {
+        html += `
+          <span class="selected-tag-pill">
+            <span>🌐 ${display}</span>
+            <button type="button" class="tag-remove-btn" onclick="toggleDomainTag('${escapeJs(dom)}', '${escapeJs(display)}')">&times;</button>
+          </span>
+        `;
+      });
+      domainsContainer.innerHTML = html;
+    }
+  }
+
+  // 3. Synchronize hidden form fields
+  const appsInput = document.getElementById('new-wf-apps');
+  if (appsInput) {
+    appsInput.value = Array.from(selectedApps.keys()).join(',');
+  }
+  const domainsInput = document.getElementById('new-wf-domains');
+  if (domainsInput) {
+    domainsInput.value = Array.from(selectedDomains.keys()).join(',');
+  }
+}
+
+function escapeJs(str) {
+  return (str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 async function submitCreateWorkflow() {
   const name = document.getElementById('new-wf-name').value.trim();
   const duration = parseInt(document.getElementById('new-wf-duration').value, 10);
   const contract = document.getElementById('new-wf-contract').value;
-  const appsRaw = document.getElementById('new-wf-apps').value.trim();
-  const domainsRaw = document.getElementById('new-wf-domains').value.trim();
 
   if (!name) {
-    alert('Please provide a name for your workflow.');
+    showToast('Please provide a name for your workflow.', 'error');
     return;
   }
 
-  const allowed_apps = appsRaw ? appsRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) : [];
-  const allowed_domains = domainsRaw ? domainsRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean) : [];
+  const allowed_apps = Array.from(selectedApps.keys());
+  const allowed_domains = Array.from(selectedDomains.keys());
+
+  // Smart browser auto-inclusion: if websites are allowed, ensure browsers are permitted
+  if (allowed_domains.length > 0) {
+    const commonBrowsers = ['chrome.exe', 'msedge.exe', 'brave.exe', 'firefox.exe'];
+    for (const b of commonBrowsers) {
+      if (!allowed_apps.includes(b)) {
+        allowed_apps.push(b);
+      }
+    }
+  }
 
   try {
     const res = await fetch('/api/workflows', {
@@ -202,9 +391,10 @@ async function submitCreateWorkflow() {
 
     if (!res.ok) throw new Error('Failed to create workflow');
     closeCreateWorkflowModal();
+    showToast(`Workflow "${name}" created successfully!`, 'success');
     loadWorkflows();
   } catch (err) {
-    alert('Error creating workflow: ' + err.message);
+    showToast('Error creating workflow: ' + err.message, 'error');
   }
 }
 
@@ -447,14 +637,15 @@ async function startWorkflowSession(workflowId) {
     });
 
     if (!res.ok) {
-      const err = await res.json();
-      alert('Could not start session: ' + (err.error || res.statusText));
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      showToast('Could not start session: ' + (err.error || res.statusText), 'error');
       return;
     }
 
+    showToast('Focus session started! Stay in your flow.', 'success');
     pollSession();
   } catch (err) {
-    alert('Error starting session: ' + err.message);
+    showToast('Network error starting session: ' + err.message, 'error');
   }
 }
 

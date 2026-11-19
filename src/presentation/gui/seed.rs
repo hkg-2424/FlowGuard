@@ -83,6 +83,7 @@ pub fn seed_default_workflows_if_empty(repo: &mut SqliteWorkflowRepository) {
 
     let deep_apps = vec![
         "code.exe",
+        "antigravity",
         "obsidian.exe",
         "notion.exe",
         "notepad.exe",
@@ -135,6 +136,7 @@ pub fn seed_default_workflows_if_empty(repo: &mut SqliteWorkflowRepository) {
 
     let coding_apps = vec![
         "code.exe",
+        "antigravity",
         "windowsterminal.exe",
         "cmd.exe",
         "powershell.exe",
@@ -228,5 +230,63 @@ pub fn seed_default_workflows_if_empty(repo: &mut SqliteWorkflowRepository) {
     }
     let _ = repo.save(&reading);
 
-    info!("Seeded 4 default workflows: Study, Deep Work, Coding, Reading.");
+    // 5. Online Learning & Video Lectures Workflow
+    let learning_id = WorkflowId::new("wf-learning");
+    let mut learning = Workflow::new(learning_id.clone(), "Online Learning".to_string());
+    learning.description =
+        "Udemy, Coursera, YouTube lectures, ChatGPT, and documentation".to_string();
+    learning.target_duration_minutes = Some(40);
+    learning.commitment_contract = CommitmentContract::Standard;
+    learning.default_grace_period_seconds = 30;
+
+    let learning_apps = vec![
+        "code.exe",
+        "antigravity",
+        "obsidian.exe",
+        "notion.exe",
+        "windowsterminal.exe",
+        "notepad.exe",
+    ];
+    for (i, app) in learning_apps.into_iter().enumerate() {
+        learning.rules.push(WorkflowRule {
+            id: RuleId::new(format!("learning-app-{}", i)),
+            workflow_id: learning_id.clone(),
+            description: format!("Allow {}", app),
+            scope: RuleScope::Application,
+            matcher: RuleMatcher::ApplicationName(app.to_string()),
+            effect: RuleEffect::Allow,
+            priority_weight: 10,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        });
+    }
+
+    let learning_domains = vec![
+        "udemy.com",
+        "coursera.org",
+        "youtube.com",
+        "chatgpt.com",
+        "claude.ai",
+        "github.com",
+        "wikipedia.org",
+        "docs.rs",
+    ];
+    for (i, dom) in learning_domains.into_iter().enumerate() {
+        learning.rules.push(WorkflowRule {
+            id: RuleId::new(format!("learning-dom-{}", i)),
+            workflow_id: learning_id.clone(),
+            description: format!("Allow domain {}", dom),
+            scope: RuleScope::Domain,
+            matcher: RuleMatcher::DomainPattern(dom.to_string()),
+            effect: RuleEffect::Allow,
+            priority_weight: 20,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        });
+    }
+    let _ = repo.save(&learning);
+
+    info!("Seeded default workflows: Study, Deep Work, Coding, Reading, Online Learning.");
 }

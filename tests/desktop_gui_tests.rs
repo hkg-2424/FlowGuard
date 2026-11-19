@@ -99,15 +99,16 @@ fn test_gui_default_workflow_seeding() {
     // Run seeder
     seed_default_workflows_if_empty(&mut repo);
 
-    // Must seed 4 workflows: Study, Deep Work, Coding, Reading
+    // Must seed 5 workflows: Study, Deep Work, Coding, Reading, Online Learning
     let workflows = repo.list().unwrap();
-    assert_eq!(workflows.len(), 4);
+    assert_eq!(workflows.len(), 5);
 
     let names: Vec<String> = workflows.iter().map(|w| w.name.clone()).collect();
     assert!(names.contains(&"Study".to_string()));
     assert!(names.contains(&"Deep Work".to_string()));
     assert!(names.contains(&"Coding".to_string()));
     assert!(names.contains(&"Reading".to_string()));
+    assert!(names.contains(&"Online Learning".to_string()));
 
     let study = workflows.iter().find(|w| w.name == "Study").unwrap();
     assert_eq!(study.target_duration_minutes, Some(45));
@@ -243,7 +244,14 @@ fn test_gui_full_http_api_and_session_lifecycle() {
         .expect("Lists workflows");
     assert_eq!(wf_res.status().as_u16(), 200);
     let workflows: Vec<WorkflowDto> = wf_res.json().unwrap();
-    assert_eq!(workflows.len(), 4);
+    assert_eq!(workflows.len(), 5);
+
+    // Verify GET /api/system/open-apps
+    let apps_res = client
+        .get(format!("{}/api/system/open-apps", base_url))
+        .send()
+        .expect("Lists open apps");
+    assert_eq!(apps_res.status().as_u16(), 200);
 
     // Verify POST /api/workflows creates a new custom workflow
     let create_res = client

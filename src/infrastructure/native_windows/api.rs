@@ -30,12 +30,17 @@ mod win32 {
         pub dwTime: DWORD,
     }
 
+    pub type LPARAM = isize;
+    pub type WNDENUMPROC = Option<unsafe extern "system" fn(HWND, LPARAM) -> BOOL>;
+
     #[link(name = "user32")]
     extern "system" {
         pub fn GetForegroundWindow() -> HWND;
         pub fn GetWindowTextW(hWnd: HWND, lpString: *mut WCHAR, nMaxCount: i32) -> i32;
         pub fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut DWORD) -> DWORD;
         pub fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> BOOL;
+        pub fn EnumWindows(lpEnumFunc: WNDENUMPROC, lParam: LPARAM) -> BOOL;
+        pub fn IsWindowVisible(hWnd: HWND) -> BOOL;
     }
 
     #[link(name = "kernel32")]
@@ -148,9 +153,165 @@ pub fn get_idle_state(afk_timeout_secs: u64) -> (crate::domain::IdleState, Optio
     }
 }
 
+/// Metadata describing a running desktop application for novice-friendly workflow creation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RunningAppInfo {
+    pub process_name: String,
+    pub display_name: String,
+    pub window_title: String,
+}
+
+/// Enumerates all currently visible top-level application windows on the user's desktop.
+#[cfg(target_os = "windows")]
+pub fn list_running_applications() -> Vec<RunningAppInfo> {
+    let mut apps: Vec<RunningAppInfo> = Vec::new();
+    let lparam = &mut apps as *mut Vec<RunningAppInfo> as win32::LPARAM;
+
+    unsafe {
+        win32::EnumWindows(Some(enum_windows_callback), lparam);
+    }
+
+    // Deduplicate by process_name
+    let mut seen = std::collections::HashSet::new();
+    apps.retain(|a| seen.insert(a.process_name.clone()));
+
+    // Sort alphabetically by display name
+    apps.sort_by_key(|a| a.display_name.to_lowercase());
+    apps
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_windows_callback(
+    hwnd: win32::HWND,
+    lparam: win32::LPARAM,
+) -> win32::BOOL {
+    if win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+
+    let mut title_buf = [0u16; 512];
+    let title_len = win32::GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
+    if title_len <= 0 {
+        return 1;
+    }
+
+    let raw_title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+    let title = raw_title.trim();
+    if title.is_empty() {
+        return 1;
+    }
+
+    let lower_title = title.to_lowercase();
+    let ignored_titles = [
+        "default ime",
+        "msctfime ui",
+        "program manager",
+        "settings",
+        "windows input experience",
+        "task switching",
+        "snap assist",
+    ];
+    if ignored_titles
+        .iter()
+        .any(|&ig| lower_title == ig || lower_title.starts_with(ig))
+    {
+        return 1;
+    }
+
+    let mut pid: win32::DWORD = 0;
+    win32::GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == 0 {
+        return 1;
+    }
+
+    let handle = win32::OpenProcess(win32::PROCESS_QUERY_LIMITED_INFORMATION, win32::FALSE, pid);
+    if handle.is_null() {
+        return 1;
+    }
+
+    let mut path_buf = [0u16; 1024];
+    let mut size: win32::DWORD = path_buf.len() as win32::DWORD;
+    let success = win32::QueryFullProcessImageNameW(handle, 0, path_buf.as_mut_ptr(), &mut size);
+    win32::CloseHandle(handle);
+
+    if success != 0 && size > 0 {
+        let full_path = String::from_utf16_lossy(&path_buf[..size as usize]);
+        if let Some(app_name) =
+            crate::infrastructure::activitywatch::mapper::sanitize_app_name(&full_path)
+        {
+            let lower_app = app_name.to_lowercase();
+            if lower_app == "searchhost.exe"
+                || lower_app == "shellexperiencehost.exe"
+                || lower_app == "startmenuexperiencehost.exe"
+            {
+                return 1;
+            }
+
+            let display = friendly_display_name(&app_name, title);
+            let apps = &mut *(lparam as *mut Vec<RunningAppInfo>);
+            apps.push(RunningAppInfo {
+                process_name: app_name,
+                display_name: display,
+                window_title: title.to_string(),
+            });
+        }
+    }
+
+    1
+}
+
+pub fn friendly_display_name(app_name: &str, window_title: &str) -> String {
+    let lower = app_name.to_lowercase();
+    let title_lower = window_title.to_lowercase();
+
+    if title_lower.contains("antigravity") || lower.contains("antigravity") {
+        return "Antigravity".to_string();
+    }
+
+    match lower.as_str() {
+        "code.exe" => "Visual Studio Code".to_string(),
+        "chrome.exe" => "Google Chrome".to_string(),
+        "msedge.exe" => "Microsoft Edge".to_string(),
+        "brave.exe" => "Brave Browser".to_string(),
+        "firefox.exe" => "Mozilla Firefox".to_string(),
+        "windowsterminal.exe" => "Windows Terminal".to_string(),
+        "cmd.exe" => "Command Prompt".to_string(),
+        "powershell.exe" | "pwsh.exe" => "PowerShell".to_string(),
+        "notepad.exe" => "Notepad".to_string(),
+        "obsidian.exe" => "Obsidian".to_string(),
+        "notion.exe" => "Notion".to_string(),
+        "slack.exe" => "Slack".to_string(),
+        "discord.exe" => "Discord".to_string(),
+        "spotify.exe" => "Spotify".to_string(),
+        "steam.exe" => "Steam".to_string(),
+        "devenv.exe" => "Visual Studio".to_string(),
+        "idea64.exe" | "idea.exe" => "IntelliJ IDEA".to_string(),
+        "pycharm64.exe" | "pycharm.exe" => "PyCharm".to_string(),
+        "winword.exe" => "Microsoft Word".to_string(),
+        "excel.exe" => "Microsoft Excel".to_string(),
+        "powerpnt.exe" => "Microsoft PowerPoint".to_string(),
+        "onenote.exe" => "Microsoft OneNote".to_string(),
+        "acrobat.exe" => "Adobe Acrobat".to_string(),
+        "foxitreader.exe" => "Foxit PDF Reader".to_string(),
+        _ => {
+            let base = lower.trim_end_matches(".exe");
+            let mut chars = base.chars();
+            match chars.next() {
+                None => app_name.to_string(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Non-Windows fallbacks (for compiling on Linux/macOS in CI/mock environments)
 // ----------------------------------------------------------------------------
+
+#[cfg(not(target_os = "windows"))]
+pub fn list_running_applications() -> Vec<RunningAppInfo> {
+    vec![]
+}
 
 #[cfg(not(target_os = "windows"))]
 pub fn get_foreground_window_info() -> (Option<String>, Option<String>) {

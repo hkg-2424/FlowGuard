@@ -60,20 +60,29 @@ impl GracePeriodTimer {
     }
 
     /// Evaluates the timer for the given rule and target.
+    ///
+    /// Invariant: Once an unallowed activity begins, switching between different unallowed
+    /// applications (e.g. Discord -> Steam -> YouTube) does NOT reset the grace timer.
+    /// The 30-second countdown continues monotonically until the user returns to an allowed app.
     pub fn tick(&mut self, rule_id: &RuleId, target_name: &str, grace_seconds: u32) -> TimerStatus {
         let now = Instant::now();
         let grace_duration = Duration::from_secs(grace_seconds as u64);
 
         let violation = match self.active_violation.as_mut() {
-            Some(v) if v.rule_id == *rule_id && v.target_name == target_name => {
+            Some(v) => {
+                // Ongoing drift episode: update latest target and rule, but PRESERVE started_at
+                // so the grace countdown does NOT reset when switching between unallowed applications!
+                v.rule_id = rule_id.clone();
+                v.target_name = target_name.to_string();
+
                 // If resuming from pause (e.g. user was AFK), accumulate paused duration
                 if let Some(paused_time) = v.paused_at.take() {
                     v.total_paused_duration += now.saturating_duration_since(paused_time);
                 }
                 v
             }
-            _ => {
-                // New violation started
+            None => {
+                // New violation episode started
                 self.active_violation = Some(ActiveViolation {
                     rule_id: rule_id.clone(),
                     target_name: target_name.to_string(),
@@ -163,5 +172,49 @@ impl GracePeriodTimer {
     /// Returns the rule id of the currently active violation, if any.
     pub fn active_rule_id(&self) -> Option<&RuleId> {
         self.active_violation.as_ref().map(|v| &v.rule_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grace_period_timer_persists_across_unallowed_targets() {
+        let mut timer = GracePeriodTimer::new();
+        let rule1 = RuleId::new("rule-discord");
+        let rule2 = RuleId::new("rule-steam");
+
+        // 1. Initial drift into Discord
+        let s1 = timer.tick(&rule1, "discord.exe", 30);
+        match s1 {
+            TimerStatus::GracePeriod {
+                remaining_seconds,
+                total_grace_seconds,
+            } => {
+                assert_eq!(total_grace_seconds, 30);
+                assert!(remaining_seconds <= 30);
+            }
+            _ => panic!("Expected GracePeriod"),
+        }
+        assert_eq!(timer.active_target(), Some("discord.exe"));
+
+        // 2. User switches to Steam (still unallowed) -> Timer MUST NOT reset!
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let s2 = timer.tick(&rule2, "steam.exe", 30);
+        match s2 {
+            TimerStatus::GracePeriod {
+                remaining_seconds, ..
+            } => {
+                assert!(remaining_seconds <= 30);
+            }
+            _ => panic!("Expected GracePeriod"),
+        }
+        assert_eq!(timer.active_target(), Some("steam.exe"));
+
+        // 3. Returning to allowed app cancels the violation cleanly
+        let res = timer.cancel();
+        assert!(matches!(res, Some(DriftResolution::SelfCorrected { .. })));
+        assert!(!timer.is_active());
     }
 }

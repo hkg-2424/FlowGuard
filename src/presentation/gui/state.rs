@@ -58,6 +58,13 @@ pub struct WorkflowDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningAppDto {
+    pub process_name: String,
+    pub display_name: String,
+    pub window_title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWorkflowRequest {
     pub name: String,
     pub description: Option<String>,

@@ -61,6 +61,17 @@ impl GuiEngine {
             while let Ok(cmd) = self.command_rx.try_recv() {
                 match cmd {
                     GuiCommand::StartSession { workflow_id, reply } => {
+                        // If session is already active for this workflow, return it cleanly
+                        if let Some(existing) = self.service.active_session() {
+                            if existing.workflow_id == workflow_id
+                                && (existing.state == SessionState::Active
+                                    || existing.state == SessionState::Paused)
+                            {
+                                let _ = reply.send(Ok(existing.clone()));
+                                continue;
+                            }
+                        }
+
                         match self.service.start_session(&workflow_id) {
                             Ok(sess) => {
                                 let wf = wf_repo.get(&workflow_id).ok().flatten();

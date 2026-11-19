@@ -13,8 +13,8 @@ use crate::infrastructure::persistence::sqlite::SqliteDb;
 use crate::infrastructure::persistence::{SqliteSessionRepository, SqliteWorkflowRepository};
 
 use super::state::{
-    CreateWorkflowRequest, DriftEventDto, GuiState, SessionHistoryDto, StartSessionRequest,
-    StopSessionRequest, WorkflowDto,
+    CreateWorkflowRequest, DriftEventDto, GuiState, RunningAppDto, SessionHistoryDto,
+    StartSessionRequest, StopSessionRequest, WorkflowDto,
 };
 
 const INDEX_HTML: &str = include_str!("static/index.html");
@@ -37,7 +37,10 @@ pub fn run_server(server: Server, ctx: Arc<GuiServerContext>) {
     while ctx.running.load(Ordering::SeqCst) {
         match server.recv_timeout(Duration::from_millis(100)) {
             Ok(Some(request)) => {
-                handle_request(request, &ctx);
+                let ctx_clone = ctx.clone();
+                std::thread::spawn(move || {
+                    handle_request(request, &ctx_clone);
+                });
             }
             Ok(None) => {
                 // Timeout, continue loop to check running flag
@@ -60,6 +63,37 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
     let path = url.split('?').next().unwrap_or("/");
 
     match (&method, path) {
+        (&Method::Options, _) => {
+            let cors = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
+            let methods = Header::from_bytes(
+                &b"Access-Control-Allow-Methods"[..],
+                &b"GET, POST, OPTIONS, HEAD"[..],
+            )
+            .unwrap();
+            let headers = Header::from_bytes(
+                &b"Access-Control-Allow-Headers"[..],
+                &b"Content-Type, Authorization"[..],
+            )
+            .unwrap();
+            let resp = Response::empty(204)
+                .with_header(cors)
+                .with_header(methods)
+                .with_header(headers);
+            let _ = request.respond(resp);
+        }
+        (&Method::Get, "/api/system/open-apps") => {
+            let apps = crate::infrastructure::native_windows::api::list_running_applications();
+            let dtos: Vec<RunningAppDto> = apps
+                .into_iter()
+                .map(|a| RunningAppDto {
+                    process_name: a.process_name,
+                    display_name: a.display_name,
+                    window_title: a.window_title,
+                })
+                .collect();
+            let json = serde_json::to_string(&dtos).unwrap_or_else(|_| "[]".to_string());
+            respond_json(request, 200, &json);
+        }
         (&Method::Get | &Method::Head, "/" | "/index.html") => {
             let resp = Response::from_string(INDEX_HTML).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -391,9 +425,23 @@ pub fn workflow_to_dto(wf: Workflow) -> WorkflowDto {
 
 pub fn respond_json(request: Request, status: u16, json: &str) {
     let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+    let cors = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
+    let methods = Header::from_bytes(
+        &b"Access-Control-Allow-Methods"[..],
+        &b"GET, POST, OPTIONS, HEAD"[..],
+    )
+    .unwrap();
+    let headers = Header::from_bytes(
+        &b"Access-Control-Allow-Headers"[..],
+        &b"Content-Type, Authorization"[..],
+    )
+    .unwrap();
     let resp = Response::from_string(json)
         .with_status_code(status)
-        .with_header(header);
+        .with_header(header)
+        .with_header(cors)
+        .with_header(methods)
+        .with_header(headers);
     let _ = request.respond(resp);
 }
 

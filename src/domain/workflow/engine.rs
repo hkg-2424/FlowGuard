@@ -153,6 +153,76 @@ pub fn title_matches_domain(title: &str, pattern: &str) -> bool {
     false
 }
 
+/// Matches an observed application and window title against an allowed/restricted application rule.
+///
+/// Supports exact executable names (e.g. `code.exe`), names without `.exe` (e.g. `code`),
+/// friendly application aliases (e.g. `Visual Studio Code`, `VS Code`, `Antigravity`, `Windows Terminal`),
+/// and window title substrings.
+pub fn app_matches(app_name: &str, window_title: Option<&str>, target_app: &str) -> bool {
+    let app_lower = app_name.to_lowercase();
+    let target_lower = target_app.to_lowercase();
+
+    // 1. Direct exact or sanitized match (e.g. "code.exe" == "code.exe" or "code" == "code")
+    if app_lower == target_lower
+        || app_lower.trim_end_matches(".exe") == target_lower.trim_end_matches(".exe")
+    {
+        return true;
+    }
+
+    // 2. Friendly display name / alias mapping
+    let matches_alias = match target_lower.as_str() {
+        "visual studio code" | "vs code" | "vscode" => {
+            app_lower == "code.exe" || app_lower == "code"
+        }
+        "antigravity" => {
+            app_lower.contains("antigravity")
+                || window_title
+                    .map(|t| t.to_lowercase().contains("antigravity"))
+                    .unwrap_or(false)
+        }
+        "terminal" | "windows terminal" => {
+            app_lower == "windowsterminal.exe"
+                || app_lower == "cmd.exe"
+                || app_lower == "powershell.exe"
+        }
+        "chrome" | "google chrome" => app_lower == "chrome.exe",
+        "edge" | "microsoft edge" => app_lower == "msedge.exe",
+        "brave" | "brave browser" => app_lower == "brave.exe",
+        "firefox" | "mozilla firefox" => app_lower == "firefox.exe",
+        "notion" => app_lower == "notion.exe",
+        "obsidian" => app_lower == "obsidian.exe",
+        "slack" => app_lower == "slack.exe",
+        "discord" => app_lower == "discord.exe",
+        "spotify" => app_lower == "spotify.exe",
+        "steam" => app_lower == "steam.exe",
+        "visual studio" | "devenv" => app_lower == "devenv.exe",
+        "intellij" | "intellij idea" => app_lower == "idea64.exe" || app_lower == "idea.exe",
+        "pycharm" => app_lower == "pycharm64.exe" || app_lower == "pycharm.exe",
+        "word" | "microsoft word" => app_lower == "winword.exe",
+        "excel" | "microsoft excel" => app_lower == "excel.exe",
+        "powerpoint" => app_lower == "powerpnt.exe",
+        "onenote" => app_lower == "onenote.exe",
+        "acrobat" | "adobe acrobat" | "pdf reader" => {
+            app_lower == "acrobat.exe" || app_lower == "foxitreader.exe"
+        }
+        _ => false,
+    };
+
+    if matches_alias {
+        return true;
+    }
+
+    // 3. Fallback: Check if window title explicitly contains the friendly target
+    if let Some(title) = window_title {
+        let title_lower = title.to_lowercase();
+        if title_lower.contains(&target_lower) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Pure domain evaluation engine.
 ///
 /// Evaluates incoming [`ActivityObservation`] records against the active [`Workflow`]
@@ -249,7 +319,9 @@ impl RuleEngine {
                         false
                     }
                 }
-                RuleMatcher::ApplicationName(target_app) => app_lower == target_app.to_lowercase(),
+                RuleMatcher::ApplicationName(target_app) => {
+                    app_matches(&app_lower, observation.window_title.as_deref(), target_app)
+                }
                 RuleMatcher::Any => true,
             };
 

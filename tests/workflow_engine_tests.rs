@@ -539,3 +539,100 @@ fn test_wf09_native_window_title_domain_fallback() {
         "Native Windows observation on Reddit must not match GitHub or Wikipedia rules"
     );
 }
+
+#[test]
+fn test_wf10_grace_countdown_persists_across_unallowed_app_switches() {
+    let wf_id = WorkflowId::new("wf-strict");
+    let workflow = Workflow::new(wf_id.clone(), "Strict Coding").with_rule(WorkflowRule {
+        id: RuleId::new("rule-code"),
+        workflow_id: wf_id.clone(),
+        description: "Allow Code".into(),
+        scope: RuleScope::Application,
+        matcher: RuleMatcher::ApplicationName("code.exe".into()),
+        effect: RuleEffect::Allow,
+        priority_weight: 10,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+
+    // 1. Initial drift into Discord (unallowed) -> Starts 30s grace window
+    let obs_discord = sample_observation("discord.exe", "Discord", None);
+    let dec1 = engine.evaluate(&obs_discord, &workflow, &mut timer, now);
+    assert!(dec1.is_violation());
+    assert!(timer.is_active());
+    assert_eq!(timer.active_target(), Some("discord.exe"));
+
+    // 2. User switches to Steam (also unallowed) -> Timer MUST NOT reset to 30!
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let obs_steam = sample_observation("steam.exe", "Steam Store", None);
+    let dec2 = engine.evaluate(&obs_steam, &workflow, &mut timer, now);
+    assert!(dec2.is_violation());
+    assert_eq!(timer.active_target(), Some("steam.exe"));
+
+    // 3. User switches to YouTube on Chrome (unallowed) -> Still ticking down
+    let obs_yt = sample_observation("chrome.exe", "YouTube - Shorts", None);
+    let dec3 = engine.evaluate(&obs_yt, &workflow, &mut timer, now);
+    assert!(dec3.is_violation());
+    assert_eq!(timer.active_target(), Some("chrome.exe"));
+
+    // 4. Finally returns to VS Code -> Allowed, timer cancels with self-correction
+    let obs_code = sample_observation("code.exe", "main.rs", None);
+    let dec4 = engine.evaluate(&obs_code, &workflow, &mut timer, now);
+    assert!(dec4.is_allowed());
+    assert!(!timer.is_active());
+}
+
+#[test]
+fn test_wf11_friendly_app_names_and_aliases() {
+    let wf_id = WorkflowId::new("wf-friendly");
+    let workflow = Workflow::new(wf_id.clone(), "Friendly Setup")
+        .with_rule(WorkflowRule {
+            id: RuleId::new("rule-vs-code"),
+            workflow_id: wf_id.clone(),
+            description: "Allow VS Code".into(),
+            scope: RuleScope::Application,
+            matcher: RuleMatcher::ApplicationName("Visual Studio Code".into()),
+            effect: RuleEffect::Allow,
+            priority_weight: 10,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        })
+        .with_rule(WorkflowRule {
+            id: RuleId::new("rule-antigravity"),
+            workflow_id: wf_id.clone(),
+            description: "Allow Antigravity".into(),
+            scope: RuleScope::Application,
+            matcher: RuleMatcher::ApplicationName("Antigravity".into()),
+            effect: RuleEffect::Allow,
+            priority_weight: 10,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        });
+
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+
+    // 1. "code.exe" matches rule configured as "Visual Studio Code"
+    let obs_code = sample_observation("code.exe", "src/main.rs - Visual Studio Code", None);
+    let dec1 = engine.evaluate(&obs_code, &workflow, &mut timer, now);
+    assert!(
+        dec1.is_allowed(),
+        "code.exe must match 'Visual Studio Code'"
+    );
+
+    // 2. Window with Antigravity in title or process matches "Antigravity"
+    let obs_agy = sample_observation("electron.exe", "Antigravity - FlowGuardAG", None);
+    let dec2 = engine.evaluate(&obs_agy, &workflow, &mut timer, now);
+    assert!(
+        dec2.is_allowed(),
+        "Antigravity title must match 'Antigravity'"
+    );
+}

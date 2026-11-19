@@ -438,46 +438,114 @@
     </div>
   </div>
 
-  <!-- MODAL 4: CREATE WORKFLOW -->
+  <!-- MODAL 4: CREATE WORKFLOW (NOVICE FRIENDLY) -->
   <div class="modal-backdrop hidden" id="modal-create-workflow">
-    <div class="modal-card">
+    <div class="modal-card modal-card-lg">
       <div class="modal-header">
-        <h3>Create Custom Workflow</h3>
+        <div>
+          <h3>Create Custom Workflow</h3>
+          <p class="modal-subtitle">Pick the tools and learning websites you need. Everything else will be kept at bay.</p>
+        </div>
         <button class="modal-close-btn" onclick="closeCreateWorkflowModal()">&times;</button>
       </div>
       <div class="modal-body">
-        <div class="form-group">
-          <label for="new-wf-name">Workflow Name</label>
-          <input type="text" id="new-wf-name" class="form-control" placeholder="e.g. Writing, Language Practice, CAD Design">
-        </div>
-
-        <div class="form-row mt-3">
+        <div class="form-row">
+          <div class="form-group flex-2">
+            <label for="new-wf-name">Workflow Name</label>
+            <input type="text" id="new-wf-name" class="form-control" placeholder="e.g. Rust Deep Dive, Course Study, Research &amp; Writing">
+          </div>
           <div class="form-group flex-1">
-            <label for="new-wf-duration">Target Duration (Minutes)</label>
+            <label for="new-wf-duration">Target Duration (min)</label>
             <input type="number" id="new-wf-duration" class="form-control" value="25" min="5" max="240">
           </div>
-
           <div class="form-group flex-1">
             <label for="new-wf-contract">Commitment Level</label>
             <select id="new-wf-contract" class="form-control">
               <option value="standard">Standard (Flexible)</option>
-              <option value="breakable" selected>Accountable Breakable (Reflection on Exit)</option>
+              <option value="breakable" selected>Accountable Breakable</option>
               <option value="unbreakable">Unbreakable (Ulysses Lock)</option>
             </select>
           </div>
         </div>
 
-        <div class="form-group mt-3">
-          <label for="new-wf-apps">Allowed Applications (comma-separated)</label>
-          <input type="text" id="new-wf-apps" class="form-control" placeholder="e.g. code.exe, obsidian.exe, notepad.exe">
-          <span class="form-hint">Tip: Use the executable name (e.g. code.exe, acrobat.exe, devenv.exe).</span>
+        <!-- 1. Open on PC Selection -->
+        <div class="section-pickers mt-4">
+          <div class="picker-header">
+            <div class="picker-title-wrap">
+              <span class="live-dot pulse"></span>
+              <strong>Currently Open on Your PC</strong>
+              <span class="text-muted text-xs">(Click to add or remove)</span>
+            </div>
+            <button class="btn btn-ghost btn-xs" type="button" onclick="loadRunningApps()">↻ Refresh</button>
+          </div>
+          <div class="chips-cloud" id="open-apps-chips">
+            <span class="text-muted text-xs py-1">Detecting open windows...</span>
+          </div>
         </div>
 
-        <div class="form-group mt-3">
-          <label for="new-wf-domains">Allowed Web Domains (comma-separated)</label>
-          <input type="text" id="new-wf-domains" class="form-control" placeholder="e.g. github.com, docs.rs, stackoverflow.com">
-          <span class="form-hint">Tip: Enter domain without https:// (e.g. wikipedia.org).</span>
+        <!-- 2. Popular Apps Selection -->
+        <div class="section-pickers mt-3">
+          <div class="picker-header">
+            <strong>Popular Work &amp; Dev Apps</strong>
+          </div>
+          <div class="chips-cloud">
+            <button type="button" class="chip-preset" onclick="toggleAppTag('code.exe', 'Visual Studio Code')">💻 VS Code</button>
+            <button type="button" class="chip-preset" onclick="toggleAppTag('antigravity', 'Antigravity')">🚀 Antigravity</button>
+            <button type="button" class="chip-preset" onclick="toggleAppTag('windowsterminal.exe', 'Terminal / PowerShell')">⬛ Terminal</button>
+            <button type="button" class="chip-preset" onclick="toggleAppTag('obsidian.exe', 'Obsidian')">💎 Obsidian</button>
+            <button type="button" class="chip-preset" onclick="toggleAppTag('notion.exe', 'Notion')">📓 Notion</button>
+            <button type="button" class="chip-preset" onclick="toggleAppTag('winword.exe', 'Microsoft Word')">📄 Word</button>
+            <button type="button" class="chip-preset" onclick="toggleAppTag('acrobat.exe', 'PDF Reader')">📑 PDF Reader</button>
+          </div>
         </div>
+
+        <!-- 3. Popular Learning & Work Sites -->
+        <div class="section-pickers mt-3">
+          <div class="picker-header">
+            <strong>Popular Learning &amp; Research Sites</strong>
+          </div>
+          <div class="chips-cloud">
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('udemy.com', 'Udemy')">🎓 Udemy</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('coursera.org', 'Coursera')">🎓 Coursera</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('youtube.com', 'YouTube Lectures')">🎥 YouTube</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('chatgpt.com', 'ChatGPT')">🤖 ChatGPT</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('claude.ai', 'Claude')">🤖 Claude</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('github.com', 'GitHub')">🐙 GitHub</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('docs.rs', 'Rust Docs')">🦀 Docs.rs</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('medium.com', 'Medium')">📰 Medium</button>
+            <button type="button" class="chip-preset" onclick="toggleDomainTag('wikipedia.org', 'Wikipedia')">🌐 Wikipedia</button>
+          </div>
+        </div>
+
+        <!-- 4. Quick Add Custom Website -->
+        <div class="form-group mt-3">
+          <label>Add Any Other Website or Paste URL</label>
+          <div class="input-with-action">
+            <input type="text" id="custom-domain-input" class="form-control" placeholder="e.g. edx.org or paste https://www.udemy.com/course/..." onkeydown="if(event.key==='Enter'){event.preventDefault();addCustomDomain();}">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addCustomDomain()">+ Add Site</button>
+          </div>
+          <span class="form-hint">Tip: Paste any link; FlowGuard automatically extracts the site name.</span>
+        </div>
+
+        <!-- 5. Selected Summary Box -->
+        <div class="selected-summary-box mt-3">
+          <div class="summary-line">
+            <span class="summary-label">Selected Applications:</span>
+            <div class="tags-container" id="selected-apps-container">
+              <span class="text-muted text-xs">No apps selected yet</span>
+            </div>
+          </div>
+          <div class="summary-line mt-2">
+            <span class="summary-label">Selected Websites:</span>
+            <div class="tags-container" id="selected-domains-container">
+              <span class="text-muted text-xs">No websites selected yet</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hidden actual input fields for form compatibility -->
+        <input type="hidden" id="new-wf-apps">
+        <input type="hidden" id="new-wf-domains">
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeCreateWorkflowModal()">Cancel</button>
@@ -485,6 +553,9 @@
       </div>
     </div>
   </div>
+
+  <!-- TOAST NOTIFICATION CONTAINER -->
+  <div id="toast-container" class="toast-container"></div>
 
   <!-- MODAL 5: DRIFT EVENTS VIEWER -->
   <div class="modal-backdrop hidden" id="modal-drift-events">

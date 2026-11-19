@@ -3,6 +3,7 @@
 Cargo.lock
 *.exe
 *.exe.old
+!versions/**
 
 # ==========================================
 # Rust build artifacts
