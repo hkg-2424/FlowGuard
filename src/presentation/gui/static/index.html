@@ -53,6 +53,11 @@
         </div>
       </div>
 
+      <button class="btn btn-secondary btn-sm" id="btn-sound-toggle" onclick="toggleSound()" title="Toggle polite focus audio cues">
+        <span id="sound-icon">🔊</span>
+        <span id="sound-label">Audio Cues</span>
+      </button>
+
       <button class="btn btn-secondary btn-sm" onclick="startTour(true)" title="Step-by-step introduction to FlowGuard">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
@@ -74,144 +79,217 @@
   <main class="main-container">
     <!-- VIEW 1: FOCUS HUB -->
     <section id="view-focus" class="view-section active">
-      <!-- Inactive / Idle State: Workflow Selector & Presets -->
-      <div id="selector-panel" class="panel">
-        <div class="hero-greeting">
-          <h1>Ready to achieve deep flow?</h1>
-          <p>Select a pre-configured workflow below or create a custom one with your preferred apps and websites.</p>
-        </div>
-
-        <div class="workflows-grid" id="workflows-container">
-          <!-- Populated by JavaScript with Study, Deep Work, Coding, Reading presets -->
-        </div>
-      </div>
-
-      <!-- Active State: Live Focus Session Dashboard -->
-      <div id="session-dashboard" class="panel hidden">
-        <!-- Live Alert Banner (for Grace Period & Distractions & Celebrations) -->
-        <div id="alert-banner" class="alert-banner hidden">
-          <div class="alert-icon" id="alert-icon">⚠️</div>
-          <div class="alert-content">
-            <h4 id="alert-title">Distraction Detected!</h4>
-            <p id="alert-message">Return to your allowed workflow before the grace period ends to preserve your focus score.</p>
-          </div>
-          <div class="alert-countdown" id="alert-countdown">30s</div>
-        </div>
-
-        <!-- Pull-Back Celebration Banner -->
-        <div id="pullback-banner" class="pullback-banner hidden">
-          <div class="pullback-icon">🎉</div>
-          <div class="pullback-text">
-            <strong>Self-Correction Recorded!</strong>
-            <span id="pullback-desc">You returned to flow within 6s. Focus Quality Score preserved!</span>
-          </div>
-        </div>
-
-        <!-- Dashboard Grid Layout -->
-        <div class="dashboard-grid">
-          <!-- Main Left Column: Timer & Grace Animation -->
-          <div class="card dashboard-timer-card">
-            <div class="session-card-header">
-              <div class="session-badge" id="session-wf-name">Deep Work</div>
-              <div class="contract-badge" id="session-contract-badge">Accountable</div>
+      <div class="hub-container">
+        <!-- Main Area: Workflow Grid or Active Session -->
+        <div class="hub-main">
+          <!-- Inactive / Idle State: Workflow Selector & Presets -->
+          <div id="selector-panel" class="panel">
+            <div class="hero-greeting">
+              <h1>Ready to achieve deep flow?</h1>
+              <p>Select a pre-configured workflow below or create a custom one with your preferred apps and websites.</p>
             </div>
 
-            <!-- Radial Progress Ring & Countdown -->
-            <div class="timer-centerpiece">
-              <div class="radial-ring-container">
-                <svg class="radial-svg" width="260" height="260" viewBox="0 0 260 260">
-                  <circle class="ring-bg" cx="130" cy="130" r="110"/>
-                  <circle class="ring-progress" id="grace-ring" cx="130" cy="130" r="110"/>
-                </svg>
-                <div class="timer-display">
-                  <div class="timer-digits" id="timer-digits">25:00</div>
-                  <div class="timer-label" id="timer-label">Remaining Time</div>
-                  <div class="grace-label hidden" id="grace-label">
-                    <span class="grace-pulse"></span> Grace Window: <strong id="grace-seconds-text">30s</strong>
+            <div class="workflows-grid" id="workflows-container">
+              <!-- Populated by JavaScript with Study, Deep Work, Coding, Reading presets -->
+            </div>
+          </div>
+
+          <!-- Active State: Live Focus Session Dashboard -->
+          <div id="session-dashboard" class="panel hidden">
+            <!-- Live Alert Banner (for Grace Period & Distractions & Celebrations) -->
+            <div id="alert-banner" class="alert-banner hidden">
+              <div class="alert-icon" id="alert-icon">⚠️</div>
+              <div class="alert-content">
+                <h4 id="alert-title">Distraction Detected!</h4>
+                <p id="alert-message">Return to your allowed workflow before the grace period ends to preserve your focus score.</p>
+              </div>
+              <div class="alert-countdown" id="alert-countdown">30s</div>
+            </div>
+
+            <!-- Pull-Back Celebration Banner -->
+            <div id="pullback-banner" class="pullback-banner hidden">
+              <div class="pullback-icon">🎉</div>
+              <div class="pullback-text">
+                <strong>Self-Correction Recorded!</strong>
+                <span id="pullback-desc">You returned to flow within 6s. Focus Quality Score preserved!</span>
+              </div>
+            </div>
+
+            <!-- Dashboard Grid Layout -->
+            <div class="dashboard-grid">
+              <!-- Main Left Column: Timer & Grace Animation -->
+              <div class="card dashboard-timer-card">
+                <div class="session-card-header">
+                  <div class="session-badge" id="session-wf-name">Deep Work</div>
+                  <div class="contract-badge" id="session-contract-badge">Accountable</div>
+                </div>
+
+                <!-- Radial Progress Ring & Countdown -->
+                <div class="timer-centerpiece">
+                  <div class="radial-ring-container">
+                    <svg class="radial-svg" width="260" height="260" viewBox="0 0 260 260">
+                      <circle class="ring-bg" cx="130" cy="130" r="110"/>
+                      <circle class="ring-progress" id="grace-ring" cx="130" cy="130" r="110"/>
+                    </svg>
+                    <div class="timer-display">
+                      <div class="timer-digits" id="timer-digits">25:00</div>
+                      <div class="timer-label" id="timer-label">Remaining Time</div>
+                      <div class="grace-label hidden" id="grace-label">
+                        <span class="grace-pulse"></span> Grace Window: <strong id="grace-seconds-text">30s</strong>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Session Controls -->
+                <div class="session-controls">
+                  <button class="btn btn-secondary btn-lg" id="btn-pause-resume" onclick="togglePauseResume()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                    <span id="btn-pause-text">Pause</span>
+                  </button>
+                  <button class="btn btn-danger btn-lg" id="btn-end-session" onclick="handleEndSessionClick()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                    </svg>
+                    End Session
+                  </button>
+                </div>
+              </div>
+
+              <!-- Right Column: Live Context & Live Metrics -->
+              <div class="dashboard-side-column">
+                <!-- Active Foreground App Context -->
+                <div class="card live-context-card">
+                  <h3 class="card-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    Live Foreground Activity
+                  </h3>
+
+                  <div class="active-app-box">
+                    <div class="app-avatar" id="app-avatar">💻</div>
+                    <div class="app-details">
+                      <div class="app-name-row">
+                        <span class="app-exe" id="live-app-name">code.exe</span>
+                        <span class="policy-chip chip-allowed" id="policy-chip">Allowed Context</span>
+                      </div>
+                      <div class="window-title" id="live-window-title">FlowGuard - Visual Studio Code</div>
+                      <div class="domain-title" id="live-domain-title">github.com</div>
+                    </div>
+                  </div>
+
+                  <div class="live-prompt-box" id="live-prompt-box">
+                    <p id="live-prompt-text">Great job! You are currently working inside an authorized application.</p>
+                  </div>
+                </div>
+
+                <!-- Live Session Metrics -->
+                <div class="card session-metrics-card">
+                  <h3 class="card-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>
+                    </svg>
+                    Live Session Stats
+                  </h3>
+
+                  <div class="metrics-grid">
+                    <div class="metric-box">
+                      <div class="metric-label">Focus Time</div>
+                      <div class="metric-value focus-value" id="stat-focus-time">0m 00s</div>
+                    </div>
+
+                    <div class="metric-box">
+                      <div class="metric-label">Quality Score</div>
+                      <div class="metric-value score-value" id="stat-quality-score">100%</div>
+                    </div>
+
+                    <div class="metric-box">
+                      <div class="metric-label">Pull-Backs</div>
+                      <div class="metric-value pullback-value" id="stat-pullbacks">0</div>
+                      <div class="metric-hint">Self-corrections</div>
+                    </div>
+
+                    <div class="metric-box">
+                      <div class="metric-label">Grace / Distraction</div>
+                      <div class="metric-value grace-value" id="stat-grace-distraction">0s / 0s</div>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-
-            <!-- Session Controls -->
-            <div class="session-controls">
-              <button class="btn btn-secondary btn-lg" id="btn-pause-resume" onclick="togglePauseResume()">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
-                </svg>
-                <span id="btn-pause-text">Pause</span>
-              </button>
-              <button class="btn btn-danger btn-lg" id="btn-end-session" onclick="handleEndSessionClick()">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                </svg>
-                End Session
-              </button>
-            </div>
-          </div>
-
-          <!-- Right Column: Live Context & Live Metrics -->
-          <div class="dashboard-side-column">
-            <!-- Active Foreground App Context -->
-            <div class="card live-context-card">
-              <h3 class="card-title">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-                </svg>
-                Live Foreground Activity
-              </h3>
-
-              <div class="active-app-box">
-                <div class="app-avatar" id="app-avatar">💻</div>
-                <div class="app-details">
-                  <div class="app-name-row">
-                    <span class="app-exe" id="live-app-name">code.exe</span>
-                    <span class="policy-chip chip-allowed" id="policy-chip">Allowed Context</span>
-                  </div>
-                  <div class="window-title" id="live-window-title">FlowGuard - Visual Studio Code</div>
-                  <div class="domain-title" id="live-domain-title">github.com</div>
-                </div>
-              </div>
-
-              <div class="live-prompt-box" id="live-prompt-box">
-                <p id="live-prompt-text">Great job! You are currently working inside an authorized application.</p>
-              </div>
-            </div>
-
-            <!-- Live Session Metrics -->
-            <div class="card session-metrics-card">
-              <h3 class="card-title">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>
-                </svg>
-                Live Session Stats
-              </h3>
-
-              <div class="metrics-grid">
-                <div class="metric-box">
-                  <div class="metric-label">Focus Time</div>
-                  <div class="metric-value focus-value" id="stat-focus-time">0m 00s</div>
-                </div>
-
-                <div class="metric-box">
-                  <div class="metric-label">Quality Score</div>
-                  <div class="metric-value score-value" id="stat-quality-score">100%</div>
-                </div>
-
-                <div class="metric-box">
-                  <div class="metric-label">Pull-Backs</div>
-                  <div class="metric-value pullback-value" id="stat-pullbacks">0</div>
-                  <div class="metric-hint">Self-corrections</div>
-                </div>
-
-                <div class="metric-box">
-                  <div class="metric-label">Grace / Distraction</div>
-                  <div class="metric-value grace-value" id="stat-grace-distraction">0s / 0s</div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
+
+        <!-- Dashboard Side Panel: Continuous Passive Tracking, Shorts/Reels Radar & Activity Feed -->
+        <aside class="hub-side-panel">
+          <!-- Real-Time Activity Radar Card -->
+          <div class="side-panel-card radar-card">
+            <div class="side-panel-header">
+              <div class="radar-live-badge">
+                <span class="live-pulse-dot"></span>
+                <span>Activity Radar</span>
+              </div>
+              <span class="badge-status-pill" id="radar-status-badge">Passive Tracking</span>
+            </div>
+
+            <!-- Current App & Window Preview -->
+            <div class="radar-current-box" id="radar-current-box">
+              <div class="radar-current-icon" id="radar-current-icon">💻</div>
+              <div class="radar-current-meta">
+                <div class="radar-current-app-row">
+                  <span class="radar-current-app" id="radar-current-app">Detecting...</span>
+                  <span class="radar-category-pill" id="radar-category-pill">Ready</span>
+                </div>
+                <div class="radar-current-title" id="radar-current-title">FlowGuard is monitoring desktop activity</div>
+              </div>
+            </div>
+
+            <!-- YouTube Shorts / Instagram Reels Real-Time Alert Banner -->
+            <div class="shorts-alert-banner hidden" id="shorts-alert-banner">
+              <div class="shorts-alert-icon">⚡</div>
+              <div class="shorts-alert-body">
+                <strong id="shorts-platform-tag">Shorts / Reels Detected!</strong>
+                <p id="shorts-media-title">Watching video</p>
+              </div>
+            </div>
+
+            <!-- Distraction & Shorts Tracker Stats -->
+            <div class="side-panel-metrics">
+              <div class="side-metric-item">
+                <span class="side-metric-label">Shorts / Reels</span>
+                <span class="side-metric-val val-shorts" id="side-shorts-count">0</span>
+              </div>
+              <div class="side-metric-item">
+                <span class="side-metric-label">Shorts Watch Time</span>
+                <span class="side-metric-val" id="side-shorts-time">0s</span>
+              </div>
+              <div class="side-metric-item">
+                <span class="side-metric-label">Distraction Time</span>
+                <span class="side-metric-val val-distraction" id="side-distraction-time">0s</span>
+              </div>
+              <div class="side-metric-item">
+                <span class="side-metric-label">Productive Time</span>
+                <span class="side-metric-val val-productive" id="side-productive-time">0s</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Continuous Live Activity Feed / History Stream -->
+          <div class="side-panel-card stream-card">
+            <div class="side-panel-header">
+              <h4>Activity &amp; Media Stream</h4>
+              <span class="text-muted text-xs">Live History</span>
+            </div>
+            <div class="activity-feed-scroll" id="activity-feed-list">
+              <div class="empty-feed-placeholder">
+                <span>Listening for window changes...</span>
+              </div>
+            </div>
+          </div>
+        </aside>
       </div>
     </section>
 
@@ -302,9 +380,9 @@
   </main>
 
   <!-- MODAL 1: INTERACTIVE ONBOARDING TOUR -->
-  <div class="modal-backdrop hidden" id="modal-tour">
+  <div class="modal-backdrop hidden" id="modal-tour" onclick="if(event.target===this) closeTour()">
     <div class="modal-card tour-modal">
-      <button class="modal-close-btn" onclick="closeTour()">&times;</button>
+      <button class="modal-close-btn" onclick="closeTour()" title="Close (Esc)">&times;</button>
       
       <div class="tour-slide" id="tour-slide-1">
         <div class="tour-illustration">🛡️</div>
@@ -385,14 +463,14 @@
   </div>
 
   <!-- MODAL 2: ACCOUNTABLE EXIT REFLECTION -->
-  <div class="modal-backdrop hidden" id="modal-accountable-exit">
+  <div class="modal-backdrop hidden" id="modal-accountable-exit" onclick="if(event.target===this) closeAccountableModal()">
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-row">
           <span class="modal-badge badge-warning">Accountable Commitment Active</span>
           <h3>Early Exit Reflection</h3>
         </div>
-        <button class="modal-close-btn" onclick="closeAccountableModal()">&times;</button>
+        <button class="modal-close-btn" onclick="closeAccountableModal()" title="Close (Esc)">&times;</button>
       </div>
       <div class="modal-body">
         <p class="text-secondary">
@@ -414,14 +492,14 @@
   </div>
 
   <!-- MODAL 3: ULYSSES / UNBREAKABLE WARNING -->
-  <div class="modal-backdrop hidden" id="modal-unbreakable-warning">
+  <div class="modal-backdrop hidden" id="modal-unbreakable-warning" onclick="if(event.target===this) closeUnbreakableModal()">
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-row">
           <span class="modal-badge badge-danger">Unbreakable Commitment Active</span>
           <h3>Ulysses Lock Enforced</h3>
         </div>
-        <button class="modal-close-btn" onclick="closeUnbreakableModal()">&times;</button>
+        <button class="modal-close-btn" onclick="closeUnbreakableModal()" title="Close (Esc)">&times;</button>
       </div>
       <div class="modal-body">
         <div class="unbreakable-dialog-icon">🔒</div>
@@ -439,14 +517,14 @@
   </div>
 
   <!-- MODAL 4: CREATE WORKFLOW (NOVICE FRIENDLY) -->
-  <div class="modal-backdrop hidden" id="modal-create-workflow">
+  <div class="modal-backdrop hidden" id="modal-create-workflow" onclick="if(event.target===this) closeCreateWorkflowModal()">
     <div class="modal-card modal-card-lg">
       <div class="modal-header">
         <div>
-          <h3>Create Custom Workflow</h3>
+          <h3 id="create-modal-title">Create Custom Workflow</h3>
           <p class="modal-subtitle">Pick the tools and learning websites you need. Everything else will be kept at bay.</p>
         </div>
-        <button class="modal-close-btn" onclick="closeCreateWorkflowModal()">&times;</button>
+        <button class="modal-close-btn" onclick="closeCreateWorkflowModal()" title="Close (Esc)">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-row">
@@ -468,34 +546,53 @@
           </div>
         </div>
 
-        <!-- 1. Open on PC Selection -->
+        <!-- Selected Summary Box (Pinned at the Top for Instant Feedback) -->
+        <div class="selected-summary-box mt-3">
+          <div class="summary-line">
+            <span class="summary-label">Selected Applications:</span>
+            <div class="tags-container" id="selected-apps-container">
+              <span class="text-muted text-xs">No apps selected yet (will allow all unless specified)</span>
+            </div>
+          </div>
+          <div class="summary-line mt-2">
+            <span class="summary-label">Selected Websites:</span>
+            <div class="tags-container" id="selected-domains-container">
+              <span class="text-muted text-xs">No websites selected (will allow all unless specified)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 1. Open on PC Selection with Instant Search Filter -->
         <div class="section-pickers mt-4">
           <div class="picker-header">
             <div class="picker-title-wrap">
-              <span class="live-dot pulse"></span>
+              <span class="live-pulse-dot"></span>
               <strong>Currently Open on Your PC</strong>
               <span class="text-muted text-xs">(Click to add or remove)</span>
             </div>
-            <button class="btn btn-ghost btn-xs" type="button" onclick="loadRunningApps()">↻ Refresh</button>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="text" id="filter-running-apps" class="form-control" style="padding:3px 8px;font-size:0.75rem;width:150px;" placeholder="Search windows..." oninput="filterRunningApps(this.value)">
+              <button class="btn btn-ghost btn-xs" type="button" onclick="loadRunningApps()">↻ Refresh</button>
+            </div>
           </div>
           <div class="chips-cloud" id="open-apps-chips">
             <span class="text-muted text-xs py-1">Detecting open windows...</span>
           </div>
         </div>
 
-        <!-- 2. Popular Apps Selection -->
+        <!-- 2. Popular Work & Dev Apps -->
         <div class="section-pickers mt-3">
           <div class="picker-header">
             <strong>Popular Work &amp; Dev Apps</strong>
           </div>
-          <div class="chips-cloud">
-            <button type="button" class="chip-preset" onclick="toggleAppTag('code.exe', 'Visual Studio Code')">💻 VS Code</button>
-            <button type="button" class="chip-preset" onclick="toggleAppTag('antigravity', 'Antigravity')">🚀 Antigravity</button>
-            <button type="button" class="chip-preset" onclick="toggleAppTag('windowsterminal.exe', 'Terminal / PowerShell')">⬛ Terminal</button>
-            <button type="button" class="chip-preset" onclick="toggleAppTag('obsidian.exe', 'Obsidian')">💎 Obsidian</button>
-            <button type="button" class="chip-preset" onclick="toggleAppTag('notion.exe', 'Notion')">📓 Notion</button>
-            <button type="button" class="chip-preset" onclick="toggleAppTag('winword.exe', 'Microsoft Word')">📄 Word</button>
-            <button type="button" class="chip-preset" onclick="toggleAppTag('acrobat.exe', 'PDF Reader')">📑 PDF Reader</button>
+          <div class="chips-cloud" id="preset-apps-cloud">
+            <button type="button" class="chip-preset" data-app="code.exe" onclick="toggleAppTag('code.exe', 'Visual Studio Code')"><span class="chip-status">+</span> 💻 VS Code</button>
+            <button type="button" class="chip-preset" data-app="antigravity" onclick="toggleAppTag('antigravity', 'Antigravity')"><span class="chip-status">+</span> 🚀 Antigravity</button>
+            <button type="button" class="chip-preset" data-app="windowsterminal.exe" onclick="toggleAppTag('windowsterminal.exe', 'Terminal / PowerShell')"><span class="chip-status">+</span> ⬛ Terminal</button>
+            <button type="button" class="chip-preset" data-app="obsidian.exe" onclick="toggleAppTag('obsidian.exe', 'Obsidian')"><span class="chip-status">+</span> 💎 Obsidian</button>
+            <button type="button" class="chip-preset" data-app="notion.exe" onclick="toggleAppTag('notion.exe', 'Notion')"><span class="chip-status">+</span> 📓 Notion</button>
+            <button type="button" class="chip-preset" data-app="winword.exe" onclick="toggleAppTag('winword.exe', 'Microsoft Word')"><span class="chip-status">+</span> 📄 Word</button>
+            <button type="button" class="chip-preset" data-app="acrobat.exe" onclick="toggleAppTag('acrobat.exe', 'PDF Reader')"><span class="chip-status">+</span> 📑 PDF Reader</button>
           </div>
         </div>
 
@@ -504,16 +601,16 @@
           <div class="picker-header">
             <strong>Popular Learning &amp; Research Sites</strong>
           </div>
-          <div class="chips-cloud">
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('udemy.com', 'Udemy')">🎓 Udemy</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('coursera.org', 'Coursera')">🎓 Coursera</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('youtube.com', 'YouTube Lectures')">🎥 YouTube</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('chatgpt.com', 'ChatGPT')">🤖 ChatGPT</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('claude.ai', 'Claude')">🤖 Claude</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('github.com', 'GitHub')">🐙 GitHub</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('docs.rs', 'Rust Docs')">🦀 Docs.rs</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('medium.com', 'Medium')">📰 Medium</button>
-            <button type="button" class="chip-preset" onclick="toggleDomainTag('wikipedia.org', 'Wikipedia')">🌐 Wikipedia</button>
+          <div class="chips-cloud" id="preset-domains-cloud">
+            <button type="button" class="chip-preset" data-domain="udemy.com" onclick="toggleDomainTag('udemy.com', 'Udemy')"><span class="chip-status">+</span> 🎓 Udemy</button>
+            <button type="button" class="chip-preset" data-domain="coursera.org" onclick="toggleDomainTag('coursera.org', 'Coursera')"><span class="chip-status">+</span> 🎓 Coursera</button>
+            <button type="button" class="chip-preset" data-domain="youtube.com" onclick="toggleDomainTag('youtube.com', 'YouTube Lectures')"><span class="chip-status">+</span> 🎥 YouTube</button>
+            <button type="button" class="chip-preset" data-domain="chatgpt.com" onclick="toggleDomainTag('chatgpt.com', 'ChatGPT')"><span class="chip-status">+</span> 🤖 ChatGPT</button>
+            <button type="button" class="chip-preset" data-domain="claude.ai" onclick="toggleDomainTag('claude.ai', 'Claude')"><span class="chip-status">+</span> 🤖 Claude</button>
+            <button type="button" class="chip-preset" data-domain="github.com" onclick="toggleDomainTag('github.com', 'GitHub')"><span class="chip-status">+</span> 🐙 GitHub</button>
+            <button type="button" class="chip-preset" data-domain="docs.rs" onclick="toggleDomainTag('docs.rs', 'Rust Docs')"><span class="chip-status">+</span> 🦀 Docs.rs</button>
+            <button type="button" class="chip-preset" data-domain="medium.com" onclick="toggleDomainTag('medium.com', 'Medium')"><span class="chip-status">+</span> 📰 Medium</button>
+            <button type="button" class="chip-preset" data-domain="wikipedia.org" onclick="toggleDomainTag('wikipedia.org', 'Wikipedia')"><span class="chip-status">+</span> 🌐 Wikipedia</button>
           </div>
         </div>
 
@@ -527,28 +624,12 @@
           <span class="form-hint">Tip: Paste any link; FlowGuard automatically extracts the site name.</span>
         </div>
 
-        <!-- 5. Selected Summary Box -->
-        <div class="selected-summary-box mt-3">
-          <div class="summary-line">
-            <span class="summary-label">Selected Applications:</span>
-            <div class="tags-container" id="selected-apps-container">
-              <span class="text-muted text-xs">No apps selected yet</span>
-            </div>
-          </div>
-          <div class="summary-line mt-2">
-            <span class="summary-label">Selected Websites:</span>
-            <div class="tags-container" id="selected-domains-container">
-              <span class="text-muted text-xs">No websites selected yet</span>
-            </div>
-          </div>
-        </div>
-
         <!-- Hidden actual input fields for form compatibility -->
         <input type="hidden" id="new-wf-apps">
         <input type="hidden" id="new-wf-domains">
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeCreateWorkflowModal()">Cancel</button>
+        <button class="btn btn-secondary" onclick="closeCreateWorkflowModal()">Cancel &amp; Close (Esc)</button>
         <button class="btn btn-primary" onclick="submitCreateWorkflow()">Create Workflow</button>
       </div>
     </div>
@@ -558,11 +639,11 @@
   <div id="toast-container" class="toast-container"></div>
 
   <!-- MODAL 5: DRIFT EVENTS VIEWER -->
-  <div class="modal-backdrop hidden" id="modal-drift-events">
+  <div class="modal-backdrop hidden" id="modal-drift-events" onclick="if(event.target===this) closeDriftModal()">
     <div class="modal-card">
       <div class="modal-header">
         <h3>Session Distraction &amp; Pull-Back Events</h3>
-        <button class="modal-close-btn" onclick="closeDriftModal()">&times;</button>
+        <button class="modal-close-btn" onclick="closeDriftModal()" title="Close (Esc)">&times;</button>
       </div>
       <div class="modal-body">
         <div id="drift-events-container">
@@ -570,7 +651,7 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="closeDriftModal()">Close</button>
+        <button class="btn btn-secondary" onclick="closeDriftModal()">Close (Esc)</button>
       </div>
     </div>
   </div>

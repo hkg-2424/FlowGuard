@@ -160,14 +160,23 @@ fn test_gui_static_assets_embedded_and_complete() {
     assert!(index_html.contains("hist-total-focus"));
     assert!(index_html.contains("history-table-body"));
 
-    // Feature 6: Status indicators
+    // Feature 6: Status indicators & Dashboard Side Panel
     assert!(index_html.contains("status-indicator"));
     assert!(index_html.contains("status-dot"));
+    assert!(index_html.contains("hub-side-panel"));
+    assert!(index_html.contains("shorts-alert-banner"));
+    assert!(index_html.contains("side-shorts-count"));
+    assert!(index_html.contains("btn-sound-toggle"));
+    assert!(app_js.contains("renderSidePanel"));
+    assert!(app_js.contains("playPullBackChime"));
+    assert!(app_js.contains("forkWorkflowPreset"));
 
     // Stylesheet rules
     assert!(style_css.contains(".radial-ring-container"));
     assert!(style_css.contains(".ring-progress"));
     assert!(style_css.contains(".alert-banner"));
+    assert!(style_css.contains(".hub-side-panel"));
+    assert!(style_css.contains(".shorts-alert-banner"));
 }
 
 // 3. Integration test: Full GUI HTTP server and Live Session Lifecycle

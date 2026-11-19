@@ -9,12 +9,105 @@ let currentSessionSnapshot = null;
 let cachedWorkflows = [];
 let cachedHistory = [];
 let lastCelebratedPullBackTime = 0;
+let previousPolicyStatus = 'None';
+
+// Web Audio API Synthesized Audio Cues
+let audioContext = null;
+let soundEnabled = localStorage.getItem('flowguard_sound_enabled') !== 'false';
+
+function initAudio() {
+  if (!audioContext) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      audioContext = new AudioCtx();
+    }
+  }
+  if (audioContext && audioContext.state === 'suspended') {
+    audioContext.resume();
+  }
+}
+
+function playGraceChime() {
+  if (!soundEnabled) return;
+  try {
+    initAudio();
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(329.63, now); // E4
+    osc.frequency.setValueAtTime(261.63, now + 0.18); // C4
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    osc.connect(gain);
+    gain.connect(audioContext.destination);
+    osc.start(now);
+    osc.stop(now + 0.45);
+  } catch (e) {
+    console.debug('Grace audio error:', e);
+  }
+}
+
+function playPullBackChime() {
+  if (!soundEnabled) return;
+  try {
+    initAudio();
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    [523.25, 659.25, 783.99].forEach((freq, i) => {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + i * 0.08);
+      gain.gain.setValueAtTime(0.09, now + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.35);
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+      osc.start(now + i * 0.08);
+      osc.stop(now + i * 0.08 + 0.35);
+    });
+  } catch (e) {
+    console.debug('PullBack audio error:', e);
+  }
+}
+
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  localStorage.setItem('flowguard_sound_enabled', soundEnabled ? 'true' : 'false');
+  updateSoundButtonUI();
+  if (soundEnabled) {
+    playPullBackChime();
+    showToast('Focus audio cues enabled', 'info');
+  } else {
+    showToast('Focus audio cues muted', 'info');
+  }
+}
+
+function updateSoundButtonUI() {
+  const icon = document.getElementById('sound-icon');
+  const label = document.getElementById('sound-label');
+  if (icon) icon.textContent = soundEnabled ? '🔊' : '🔇';
+  if (label) label.textContent = soundEnabled ? 'Audio On' : 'Muted';
+}
 
 // Initialize on DOM Ready
 document.addEventListener('DOMContentLoaded', () => {
   checkFirstLaunchTour();
   loadWorkflows();
   startLivePolling();
+  updateSoundButtonUI();
+
+  // Global Escape key listener: dismisses any open modal immediately
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeCreateWorkflowModal();
+      closeTour();
+      closeAccountableModal();
+      closeUnbreakableModal();
+      closeDriftModal();
+    }
+  });
 });
 
 // Navigation Switching
@@ -152,12 +245,21 @@ function renderWorkflows(workflows) {
           </div>
         </div>
 
-        <button class="btn btn-primary btn-md w-full" onclick="startWorkflowSession('${wf.id}')">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <polygon points="5 3 19 12 5 21 5 3"/>
-          </svg>
-          Start Focus Session
-        </button>
+        <div class="wf-actions-row">
+          <button class="btn btn-primary btn-md flex-1" onclick="startWorkflowSession('${wf.id}')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Start Focus Session
+          </button>
+          <button class="btn btn-secondary btn-md" onclick="forkWorkflowPreset('${wf.id}')" title="Copy &amp; Customize preset">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            Fork
+          </button>
+        </div>
       </div>
     `;
   }).join('');
@@ -198,6 +300,35 @@ function openCreateWorkflowModal() {
   document.getElementById('new-wf-name').value = '';
   document.getElementById('new-wf-duration').value = '25';
   document.getElementById('custom-domain-input').value = '';
+  const title = document.getElementById('create-modal-title');
+  if (title) title.textContent = 'Create Custom Workflow';
+  const filterInput = document.getElementById('filter-running-apps');
+  if (filterInput) filterInput.value = '';
+  renderSelectedTags();
+  loadRunningApps();
+  document.getElementById('modal-create-workflow').classList.remove('hidden');
+}
+
+function forkWorkflowPreset(wfId) {
+  const wf = cachedWorkflows.find(w => w.id === wfId);
+  if (!wf) return;
+  selectedApps.clear();
+  selectedDomains.clear();
+  document.getElementById('new-wf-name').value = `${wf.name} (Custom)`;
+  document.getElementById('new-wf-duration').value = wf.target_duration_minutes || 25;
+  document.getElementById('new-wf-contract').value = wf.contract_type.toLowerCase().includes('unbreakable') ? 'unbreakable' :
+                                                    wf.contract_type.toLowerCase().includes('accountable') ? 'breakable' : 'standard';
+  
+  (wf.allowed_apps || []).forEach(app => {
+    selectedApps.set(app.toLowerCase(), app);
+  });
+  (wf.allowed_domains || []).forEach(dom => {
+    selectedDomains.set(dom.toLowerCase(), dom);
+  });
+  const title = document.getElementById('create-modal-title');
+  if (title) title.textContent = `Fork & Customize: ${wf.name}`;
+  const filterInput = document.getElementById('filter-running-apps');
+  if (filterInput) filterInput.value = '';
   renderSelectedTags();
   loadRunningApps();
   document.getElementById('modal-create-workflow').classList.remove('hidden');
@@ -232,18 +363,29 @@ function renderOpenAppsChips() {
     return;
   }
 
+  const filterInput = document.getElementById('filter-running-apps');
+  const q = (filterInput ? filterInput.value : '').toLowerCase().trim();
+
   container.innerHTML = openRunningApps.map(app => {
     const isSelected = selectedApps.has(app.process_name.toLowerCase());
     const shortTitle = app.window_title ? ` (${app.window_title.slice(0, 25)}${app.window_title.length > 25 ? '...' : ''})` : '';
+    const textToMatch = `${app.display_name} ${app.window_title} ${app.process_name}`.toLowerCase();
+    const isVisible = !q || textToMatch.includes(q);
+
     return `
       <button type="button" class="chip-preset chip-open-app ${isSelected ? 'selected' : ''}" 
+              style="display: ${isVisible ? 'inline-flex' : 'none'};"
               onclick="toggleAppTag('${escapeJs(app.process_name)}', '${escapeJs(app.display_name)}')">
         <span>${isSelected ? '✓' : '+'}</span>
-        <strong>${app.display_name}</strong>
-        <span class="text-muted text-xs">${shortTitle}</span>
+        <strong>${escapeHtml(app.display_name)}</strong>
+        <span class="text-muted text-xs">${escapeHtml(shortTitle)}</span>
       </button>
     `;
   }).join('');
+}
+
+function filterRunningApps(query) {
+  renderOpenAppsChips();
 }
 
 function toggleAppTag(processName, displayName) {
@@ -309,7 +451,7 @@ function renderSelectedTags() {
       selectedApps.forEach((display, proc) => {
         html += `
           <span class="selected-tag-pill">
-            <span>💻 ${display}</span>
+            <span>💻 ${escapeHtml(display)}</span>
             <button type="button" class="tag-remove-btn" onclick="toggleAppTag('${escapeJs(proc)}', '${escapeJs(display)}')">&times;</button>
           </span>
         `;
@@ -328,7 +470,7 @@ function renderSelectedTags() {
       selectedDomains.forEach((display, dom) => {
         html += `
           <span class="selected-tag-pill">
-            <span>🌐 ${display}</span>
+            <span>🌐 ${escapeHtml(display)}</span>
             <button type="button" class="tag-remove-btn" onclick="toggleDomainTag('${escapeJs(dom)}', '${escapeJs(display)}')">&times;</button>
           </span>
         `;
@@ -346,6 +488,24 @@ function renderSelectedTags() {
   if (domainsInput) {
     domainsInput.value = Array.from(selectedDomains.keys()).join(',');
   }
+
+  // 4. Synchronize preset chips visual checked state
+  document.querySelectorAll('#preset-apps-cloud [data-app]').forEach(btn => {
+    const app = btn.getAttribute('data-app').toLowerCase();
+    const isSel = selectedApps.has(app);
+    btn.classList.toggle('selected', isSel);
+    const statusSpan = btn.querySelector('.chip-status');
+    if (statusSpan) statusSpan.textContent = isSel ? '✓' : '+';
+  });
+
+  document.querySelectorAll('#preset-domains-cloud [data-domain]').forEach(btn => {
+    const dom = btn.getAttribute('data-domain').toLowerCase();
+    const isSel = selectedDomains.has(dom);
+    btn.classList.toggle('selected', isSel);
+    const statusSpan = btn.querySelector('.chip-status');
+    if (statusSpan) statusSpan.textContent = isSel ? '✓' : '+';
+  });
+}
 }
 
 function escapeJs(str) {
@@ -441,6 +601,9 @@ function updateStatusHeader(snap) {
 }
 
 function renderSession(snap) {
+  // Always update Dashboard Side Panel (Shorts/Reels Radar & Continuous Feed) whether idle or in active session
+  renderSidePanel(snap);
+
   const selectorPanel = document.getElementById('selector-panel');
   const sessionDashboard = document.getElementById('session-dashboard');
 
@@ -449,6 +612,7 @@ function renderSession(snap) {
   if (!isSessionActive) {
     selectorPanel.classList.remove('hidden');
     sessionDashboard.classList.add('hidden');
+    previousPolicyStatus = 'None';
     return;
   }
 
@@ -483,6 +647,11 @@ function renderSession(snap) {
   const totalCircumference = 691.15; // 2 * PI * 110
 
   if (snap.policy_status === 'GracePeriod') {
+    // Play gentle audio warning cue upon first entering grace period
+    if (previousPolicyStatus !== 'GracePeriod') {
+      playGraceChime();
+    }
+
     // 30s Grace Period is ticking!
     graceLabel.classList.remove('hidden');
     graceSecondsText.textContent = `${snap.grace_remaining_seconds}s`;
@@ -590,6 +759,8 @@ function renderSession(snap) {
   // Pause / Resume Button
   const pauseBtn = document.getElementById('btn-pause-text');
   pauseBtn.textContent = snap.state === 'Paused' ? 'Resume' : 'Pause';
+
+  previousPolicyStatus = snap.policy_status;
 }
 
 function showPullBackCelebration(pullBack) {
@@ -599,11 +770,137 @@ function showPullBackCelebration(pullBack) {
   banner.classList.remove('hidden');
 
   // Play subtle web audio notification chime
-  playGentleChime();
+  playPullBackChime();
 
   setTimeout(() => {
     banner.classList.add('hidden');
   }, 6000);
+}
+
+// -----------------------------------------------------------------------------
+// DASHBOARD SIDE PANEL: CONTINUOUS ACTIVITY TRACKING & SHORTS RADAR
+// -----------------------------------------------------------------------------
+function renderSidePanel(snap) {
+  if (!snap) return;
+
+  const summary = snap.activity_summary || {};
+  const current = snap.current_activity;
+
+  // 1. Current App & Title
+  const appEl = document.getElementById('radar-current-app');
+  const titleEl = document.getElementById('radar-current-title');
+  const iconEl = document.getElementById('radar-current-icon');
+  const catPill = document.getElementById('radar-category-pill');
+  const statusBadge = document.getElementById('radar-status-badge');
+
+  if (current) {
+    if (appEl) appEl.textContent = current.app_name;
+    if (titleEl) titleEl.textContent = current.detail || current.window_title || 'Active';
+    if (catPill) catPill.textContent = current.category || 'General';
+    if (iconEl) iconEl.textContent = getActivityIcon(current.category, current.is_short_or_reel);
+  } else if (snap.current_app) {
+    if (appEl) appEl.textContent = snap.current_app;
+    if (titleEl) titleEl.textContent = snap.current_title || 'Active';
+    if (catPill) catPill.textContent = 'Active';
+    if (iconEl) iconEl.textContent = '💻';
+  }
+
+  // 2. Status Badge & Shorts Alert
+  const shortsBanner = document.getElementById('shorts-alert-banner');
+  const shortsPlatform = document.getElementById('shorts-platform-tag');
+  const shortsTitle = document.getElementById('shorts-media-title');
+
+  if (summary.is_current_short_or_reel) {
+    if (statusBadge) {
+      statusBadge.textContent = '⚡ Shorts / Reels Active';
+      statusBadge.className = 'badge-status-pill shorts';
+    }
+    if (shortsBanner) {
+      shortsBanner.classList.remove('hidden');
+      if (shortsPlatform) shortsPlatform.textContent = `${summary.current_category} Detected!`;
+      if (shortsTitle) shortsTitle.textContent = summary.current_detail || 'Shorts / Reels media';
+    }
+  } else if (summary.is_current_distraction) {
+    if (statusBadge) {
+      statusBadge.textContent = '⚠️ Distraction';
+      statusBadge.className = 'badge-status-pill distraction';
+    }
+    if (shortsBanner) shortsBanner.classList.add('hidden');
+  } else {
+    if (statusBadge) {
+      statusBadge.textContent = (snap.state === 'Active') ? 'Focus Workflow' : 'Passive Tracking';
+      statusBadge.className = 'badge-status-pill';
+    }
+    if (shortsBanner) shortsBanner.classList.add('hidden');
+  }
+
+  // 3. Metrics
+  const sideShortsCount = document.getElementById('side-shorts-count');
+  const sideShortsTime = document.getElementById('side-shorts-time');
+  const sideDistractionTime = document.getElementById('side-distraction-time');
+  const sideProductiveTime = document.getElementById('side-productive-time');
+
+  if (sideShortsCount) sideShortsCount.textContent = summary.total_shorts_count || 0;
+  if (sideShortsTime) sideShortsTime.textContent = formatDurationSeconds(summary.total_shorts_seconds || 0);
+  if (sideDistractionTime) sideDistractionTime.textContent = formatDurationSeconds(summary.total_distraction_seconds || 0);
+  if (sideProductiveTime) sideProductiveTime.textContent = formatDurationSeconds(summary.total_productive_seconds || 0);
+
+  // 4. Activity Feed Stream
+  const feedContainer = document.getElementById('activity-feed-list');
+  if (feedContainer && snap.recent_activities) {
+    if (snap.recent_activities.length === 0) {
+      feedContainer.innerHTML = '<div class="empty-feed-placeholder"><span>Listening for window changes...</span></div>';
+    } else {
+      feedContainer.innerHTML = snap.recent_activities.map(act => {
+        const itemClass = act.is_short_or_reel ? 'feed-short' :
+                          act.is_distraction ? 'feed-distraction' : 'feed-productive';
+        const icon = getActivityIcon(act.category, act.is_short_or_reel);
+        const dur = act.duration_seconds >= 60 ? `${Math.floor(act.duration_seconds / 60)}m ${act.duration_seconds % 60}s` : `${act.duration_seconds}s`;
+
+        return `
+          <div class="activity-feed-item ${itemClass}">
+            <div class="feed-item-icon">${icon}</div>
+            <div class="feed-item-meta">
+              <div class="feed-item-top">
+                <span class="feed-item-app">${escapeHtml(act.category || act.app_name)}</span>
+                <span class="feed-item-duration">${dur}</span>
+              </div>
+              <div class="feed-item-detail">${escapeHtml(act.detail || act.window_title)}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+}
+
+function getActivityIcon(category, isShortOrReel) {
+  if (isShortOrReel) return '⚡';
+  const cat = (category || '').toLowerCase();
+  if (cat.includes('short') || cat.includes('reel') || cat.includes('tiktok')) return '⚡';
+  if (cat.includes('youtube')) return '🎥';
+  if (cat.includes('social') || cat.includes('instagram') || cat.includes('twitter') || cat.includes('reddit')) return '📱';
+  if (cat.includes('learn') || cat.includes('udemy') || cat.includes('coursera')) return '🎓';
+  if (cat.includes('terminal') || cat.includes('cmd') || cat.includes('powershell')) return '⬛';
+  if (cat.includes('code') || cat.includes('vs code') || cat.includes('antigravity') || cat.includes('dev')) return '💻';
+  if (cat.includes('notion') || cat.includes('obsidian') || cat.includes('word') || cat.includes('productiv')) return '📝';
+  if (cat.includes('web') || cat.includes('browser')) return '🌐';
+  return '🖥️';
+}
+
+function formatDurationSeconds(sec) {
+  if (!sec || sec < 60) return `${sec || 0}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return `${h}h ${remM}m`;
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function playGentleChime() {

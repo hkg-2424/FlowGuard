@@ -42,6 +42,34 @@ pub struct LiveSessionSnapshot {
     pub source_type: String,
     pub source_connected: bool,
     pub last_pull_back: Option<PullBackNotification>,
+    pub current_activity: Option<LiveActivityDto>,
+    pub activity_summary: ActivityTrackerSummary,
+    pub recent_activities: Vec<LiveActivityDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveActivityDto {
+    pub app_name: String,
+    pub window_title: String,
+    pub category: String,
+    pub detail: String,
+    pub duration_seconds: u32,
+    pub is_distraction: bool,
+    pub is_short_or_reel: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActivityTrackerSummary {
+    pub current_category: String,
+    pub current_detail: String,
+    pub is_current_distraction: bool,
+    pub is_current_short_or_reel: bool,
+    pub current_duration_seconds: u32,
+    pub total_shorts_count: u32,
+    pub total_shorts_seconds: u64,
+    pub total_distraction_seconds: u64,
+    pub total_productive_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +153,9 @@ pub struct GuiState {
     pub last_pull_back: Option<PullBackNotification>,
     pub source_name: String,
     pub source_connected: bool,
+    pub activity_feed: std::collections::VecDeque<LiveActivityDto>,
+    pub current_slice: Option<LiveActivityDto>,
+    pub summary_stats: ActivityTrackerSummary,
 }
 
 impl GuiState {
@@ -137,7 +168,75 @@ impl GuiState {
             last_pull_back: None,
             source_name,
             source_connected: true,
+            activity_feed: std::collections::VecDeque::new(),
+            current_slice: None,
+            summary_stats: ActivityTrackerSummary::default(),
         }
+    }
+
+    pub fn update_activity_feed(&mut self, obs: &ActivityObservation) {
+        let app_name = obs
+            .application
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
+        let window_title = obs.window_title.clone().unwrap_or_default();
+        let browser_url = obs.browser.as_ref().and_then(|b| b.url.as_deref());
+
+        let (category, detail, is_distraction, is_short_or_reel) =
+            classify_activity(&app_name, &window_title, browser_url);
+
+        let now = Utc::now();
+
+        let switched = match &self.current_slice {
+            Some(curr) => curr.app_name != app_name || curr.detail != detail,
+            None => true,
+        };
+
+        if switched {
+            if let Some(prev) = self.current_slice.take() {
+                if prev.duration_seconds >= 2 {
+                    if prev.is_short_or_reel {
+                        self.summary_stats.total_shorts_count += 1;
+                        self.summary_stats.total_shorts_seconds += prev.duration_seconds as u64;
+                    }
+                    if prev.is_distraction {
+                        self.summary_stats.total_distraction_seconds +=
+                            prev.duration_seconds as u64;
+                    } else {
+                        self.summary_stats.total_productive_seconds += prev.duration_seconds as u64;
+                    }
+
+                    if self.activity_feed.len() >= 50 {
+                        self.activity_feed.pop_back();
+                    }
+                    self.activity_feed.push_front(prev);
+                }
+            }
+
+            self.current_slice = Some(LiveActivityDto {
+                app_name: app_name.clone(),
+                window_title: window_title.clone(),
+                category: category.clone(),
+                detail: detail.clone(),
+                duration_seconds: 1,
+                is_distraction,
+                is_short_or_reel,
+                timestamp: now,
+            });
+        } else if let Some(ref mut curr) = self.current_slice {
+            curr.duration_seconds += 1;
+            curr.timestamp = now;
+        }
+
+        self.summary_stats.current_category = category;
+        self.summary_stats.current_detail = detail;
+        self.summary_stats.is_current_distraction = is_distraction;
+        self.summary_stats.is_current_short_or_reel = is_short_or_reel;
+        self.summary_stats.current_duration_seconds = self
+            .current_slice
+            .as_ref()
+            .map(|s| s.duration_seconds)
+            .unwrap_or(0);
     }
 
     pub fn snapshot(&self) -> LiveSessionSnapshot {
@@ -274,6 +373,9 @@ impl GuiState {
                 source_type: self.source_name.clone(),
                 source_connected: self.source_connected,
                 last_pull_back: self.last_pull_back.clone(),
+                current_activity: self.current_slice.clone(),
+                activity_summary: self.summary_stats.clone(),
+                recent_activities: self.activity_feed.iter().cloned().collect(),
             }
         } else {
             LiveSessionSnapshot {
@@ -306,7 +408,185 @@ impl GuiState {
                 source_type: self.source_name.clone(),
                 source_connected: self.source_connected,
                 last_pull_back: None,
+                current_activity: self.current_slice.clone(),
+                activity_summary: self.summary_stats.clone(),
+                recent_activities: self.activity_feed.iter().cloned().collect(),
             }
         }
     }
+}
+
+pub fn classify_activity(
+    app_name: &str,
+    window_title: &str,
+    browser_url: Option<&str>,
+) -> (String, String, bool, bool) {
+    let app_lower = app_name.to_lowercase();
+    let title_trim = window_title.trim();
+    let title_lower = title_trim.to_lowercase();
+    let url_lower = browser_url.unwrap_or("").to_lowercase();
+
+    // 1. YouTube Shorts Detection
+    let is_yt_shorts = url_lower.contains("/shorts/")
+        || (title_lower.contains("youtube")
+            && (title_lower.contains("#shorts")
+                || title_lower.contains("shorts")
+                || title_lower.starts_with("shorts -")));
+
+    if is_yt_shorts {
+        let clean = clean_media_title(title_trim);
+        return ("YouTube Shorts".to_string(), clean, true, true);
+    }
+
+    // 2. Instagram Reels Detection
+    let is_ig_reels = url_lower.contains("instagram.com/reels/")
+        || url_lower.contains("instagram.com/reel/")
+        || (title_lower.contains("instagram") && title_lower.contains("reel"));
+
+    if is_ig_reels {
+        let clean = clean_media_title(title_trim);
+        return ("Instagram Reels".to_string(), clean, true, true);
+    }
+
+    // 3. TikTok Detection
+    if url_lower.contains("tiktok.com") || title_lower.contains("tiktok") {
+        let clean = clean_media_title(title_trim);
+        return ("TikTok".to_string(), clean, true, true);
+    }
+
+    // 4. Regular YouTube Video
+    if url_lower.contains("youtube.com/watch") || title_lower.contains("youtube") {
+        let clean = clean_media_title(title_trim);
+        return ("YouTube Video".to_string(), clean, false, false);
+    }
+
+    // 5. Social Media Distractions
+    let is_social = url_lower.contains("reddit.com")
+        || title_lower.contains("reddit")
+        || url_lower.contains("x.com")
+        || url_lower.contains("twitter.com")
+        || title_lower.contains("twitter")
+        || app_lower == "discord.exe"
+        || app_lower == "steam.exe";
+
+    if is_social {
+        let name = if title_lower.contains("reddit") || url_lower.contains("reddit") {
+            "Reddit"
+        } else if title_lower.contains("twitter")
+            || url_lower.contains("x.com")
+            || url_lower.contains("twitter")
+        {
+            "Twitter / X"
+        } else if app_lower == "discord.exe" {
+            "Discord"
+        } else if app_lower == "steam.exe" {
+            "Steam"
+        } else {
+            "Social Media"
+        };
+        return (name.to_string(), title_trim.to_string(), true, false);
+    }
+
+    // 6. Development & Coding
+    let is_dev = app_lower == "code.exe"
+        || app_lower.contains("antigravity")
+        || title_lower.contains("antigravity")
+        || app_lower == "windowsterminal.exe"
+        || app_lower == "powershell.exe"
+        || app_lower == "cmd.exe"
+        || app_lower == "devenv.exe"
+        || app_lower == "idea64.exe"
+        || url_lower.contains("github.com")
+        || title_lower.contains("github")
+        || url_lower.contains("docs.rs")
+        || title_lower.contains("docs.rs");
+
+    if is_dev {
+        let name = if app_lower == "code.exe" {
+            "VS Code"
+        } else if app_lower.contains("antigravity") || title_lower.contains("antigravity") {
+            "Antigravity"
+        } else if app_lower == "windowsterminal.exe" || app_lower == "powershell.exe" {
+            "Terminal"
+        } else if url_lower.contains("github.com") || title_lower.contains("github") {
+            "GitHub"
+        } else {
+            "Development"
+        };
+        return (name.to_string(), title_trim.to_string(), false, false);
+    }
+
+    // 7. Learning & Education
+    let is_learning = url_lower.contains("udemy.com")
+        || title_lower.contains("udemy")
+        || url_lower.contains("coursera.org")
+        || title_lower.contains("coursera")
+        || url_lower.contains("wikipedia.org")
+        || title_lower.contains("wikipedia");
+
+    if is_learning {
+        let name = if title_lower.contains("udemy") || url_lower.contains("udemy") {
+            "Udemy"
+        } else if title_lower.contains("coursera") || url_lower.contains("coursera") {
+            "Coursera"
+        } else {
+            "Learning"
+        };
+        return (name.to_string(), title_trim.to_string(), false, false);
+    }
+
+    // 8. General Productivity
+    let is_prod = app_lower == "obsidian.exe"
+        || app_lower == "notion.exe"
+        || app_lower == "winword.exe"
+        || app_lower == "excel.exe"
+        || app_lower == "acrobat.exe"
+        || app_lower == "notepad.exe";
+
+    if is_prod {
+        let name = if app_lower == "obsidian.exe" {
+            "Obsidian"
+        } else if app_lower == "notion.exe" {
+            "Notion"
+        } else if app_lower == "winword.exe" {
+            "Word"
+        } else {
+            "Productivity"
+        };
+        return (name.to_string(), title_trim.to_string(), false, false);
+    }
+
+    // Default Browser or App
+    if app_lower == "chrome.exe"
+        || app_lower == "msedge.exe"
+        || app_lower == "brave.exe"
+        || app_lower == "firefox.exe"
+    {
+        (
+            "Web Browsing".to_string(),
+            title_trim.to_string(),
+            false,
+            false,
+        )
+    } else {
+        (
+            crate::infrastructure::native_windows::api::friendly_display_name(
+                app_name,
+                window_title,
+            ),
+            title_trim.to_string(),
+            false,
+            false,
+        )
+    }
+}
+
+fn clean_media_title(raw: &str) -> String {
+    raw.replace(" - YouTube", "")
+        .replace(" - Google Chrome", "")
+        .replace(" - Brave", "")
+        .replace(" - Microsoft Edge", "")
+        .replace(" - Mozilla Firefox", "")
+        .trim()
+        .to_string()
 }

@@ -175,6 +175,7 @@ impl GuiEngine {
                             }
 
                             let mut st = self.state.lock().unwrap();
+                            st.update_activity_feed(&eval.observation);
                             st.last_observation = Some(eval.observation);
                             st.last_decision = Some(eval.decision);
                             st.active_session = Some(eval.session);
@@ -207,6 +208,7 @@ impl GuiEngine {
                     match self.service.poll_idle_observation() {
                         Ok(obs) => {
                             let mut st = self.state.lock().unwrap();
+                            st.update_activity_feed(&obs);
                             st.last_observation = Some(obs);
                             st.source_connected = true;
                         }
