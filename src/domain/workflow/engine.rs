@@ -153,6 +153,23 @@ pub fn title_matches_domain(title: &str, pattern: &str) -> bool {
     false
 }
 
+pub fn is_browser_app(app_name: &str) -> bool {
+    let lower = app_name.to_lowercase();
+    let clean = lower.strip_suffix(".exe").unwrap_or(&lower);
+    matches!(
+        clean,
+        "chrome"
+            | "msedge"
+            | "brave"
+            | "firefox"
+            | "opera"
+            | "vivaldi"
+            | "arc"
+            | "safari"
+            | "iexplore"
+    )
+}
+
 /// Matches an observed application and window title against an allowed/restricted application rule.
 ///
 /// Supports exact executable names (e.g. `code.exe`), names without `.exe` (e.g. `code`),
@@ -162,48 +179,50 @@ pub fn app_matches(app_name: &str, window_title: Option<&str>, target_app: &str)
     let app_lower = app_name.to_lowercase();
     let target_lower = target_app.to_lowercase();
 
+    let app_clean = app_lower.strip_suffix(".exe").unwrap_or(&app_lower);
+    let target_clean = target_lower.strip_suffix(".exe").unwrap_or(&target_lower);
+
     // 1. Direct exact or sanitized match (e.g. "code.exe" == "code.exe" or "code" == "code")
-    if app_lower == target_lower
-        || app_lower.trim_end_matches(".exe") == target_lower.trim_end_matches(".exe")
-    {
+    if app_lower == target_lower || app_clean == target_clean {
         return true;
     }
 
     // 2. Friendly display name / alias mapping
-    let matches_alias = match target_lower.as_str() {
-        "visual studio code" | "vs code" | "vscode" => {
-            app_lower == "code.exe" || app_lower == "code"
-        }
+    let matches_alias = match target_clean {
+        "visual studio code" | "vs code" | "vscode" | "code" => app_clean == "code",
         "antigravity" => {
-            app_lower.contains("antigravity")
+            app_clean.contains("antigravity")
                 || window_title
                     .map(|t| t.to_lowercase().contains("antigravity"))
                     .unwrap_or(false)
         }
-        "terminal" | "windows terminal" => {
-            app_lower == "windowsterminal.exe"
-                || app_lower == "cmd.exe"
-                || app_lower == "powershell.exe"
+        "terminal" | "windows terminal" | "windowsterminal" => {
+            app_clean == "windowsterminal"
+                || app_clean == "cmd"
+                || app_clean == "powershell"
+                || app_clean == "pwsh"
         }
-        "chrome" | "google chrome" => app_lower == "chrome.exe",
-        "edge" | "microsoft edge" => app_lower == "msedge.exe",
-        "brave" | "brave browser" => app_lower == "brave.exe",
-        "firefox" | "mozilla firefox" => app_lower == "firefox.exe",
-        "notion" => app_lower == "notion.exe",
-        "obsidian" => app_lower == "obsidian.exe",
-        "slack" => app_lower == "slack.exe",
-        "discord" => app_lower == "discord.exe",
-        "spotify" => app_lower == "spotify.exe",
-        "steam" => app_lower == "steam.exe",
-        "visual studio" | "devenv" => app_lower == "devenv.exe",
-        "intellij" | "intellij idea" => app_lower == "idea64.exe" || app_lower == "idea.exe",
-        "pycharm" => app_lower == "pycharm64.exe" || app_lower == "pycharm.exe",
-        "word" | "microsoft word" => app_lower == "winword.exe",
-        "excel" | "microsoft excel" => app_lower == "excel.exe",
-        "powerpoint" => app_lower == "powerpnt.exe",
-        "onenote" => app_lower == "onenote.exe",
-        "acrobat" | "adobe acrobat" | "pdf reader" => {
-            app_lower == "acrobat.exe" || app_lower == "foxitreader.exe"
+        "chrome" | "google chrome" => app_clean == "chrome",
+        "edge" | "microsoft edge" => app_clean == "msedge",
+        "brave" | "brave browser" => app_clean == "brave",
+        "firefox" | "mozilla firefox" => app_clean == "firefox",
+        "notion" => app_clean == "notion",
+        "obsidian" => app_clean == "obsidian",
+        "slack" => app_clean == "slack",
+        "discord" => app_clean == "discord",
+        "spotify" => app_clean == "spotify",
+        "steam" => app_clean == "steam",
+        "visual studio" | "devenv" => app_clean == "devenv",
+        "intellij" | "intellij idea" | "idea" | "idea64" => {
+            app_clean == "idea64" || app_clean == "idea"
+        }
+        "pycharm" | "pycharm64" => app_clean == "pycharm64" || app_clean == "pycharm",
+        "word" | "microsoft word" | "winword" => app_clean == "winword",
+        "excel" | "microsoft excel" => app_clean == "excel",
+        "powerpoint" | "powerpnt" => app_clean == "powerpnt",
+        "onenote" => app_clean == "onenote",
+        "acrobat" | "adobe acrobat" | "pdf reader" | "foxitreader" => {
+            app_clean == "acrobat" || app_clean == "foxitreader"
         }
         _ => false,
     };
@@ -212,10 +231,10 @@ pub fn app_matches(app_name: &str, window_title: Option<&str>, target_app: &str)
         return true;
     }
 
-    // 3. Fallback: Check if window title explicitly contains the friendly target
+    // 3. Fallback: Check if window title explicitly contains the clean target
     if let Some(title) = window_title {
         let title_lower = title.to_lowercase();
-        if title_lower.contains(&target_lower) {
+        if target_clean.len() >= 3 && title_lower.contains(target_clean) {
             return true;
         }
     }
@@ -314,7 +333,11 @@ impl RuleEngine {
                     if let Some(ref h) = browser_host {
                         domain_matches(h, pattern)
                     } else if let Some(ref title) = observation.window_title {
-                        title_matches_domain(title, pattern)
+                        if observation.browser.is_some() || is_browser_app(&app_lower) {
+                            title_matches_domain(title, pattern)
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     }

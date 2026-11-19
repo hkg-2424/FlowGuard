@@ -510,3 +510,140 @@ fn test_sqlite_concurrent_multithreaded_access() {
         }
     }
 }
+
+#[test]
+fn test_domain_matching_does_not_leak_to_non_browsers() {
+    let wf_id = WorkflowId::new("wf-study");
+    let mut wf = Workflow::new(wf_id.clone(), "Study".to_string());
+    wf.default_effect = RuleEffect::Restrict;
+    wf.rules.push(WorkflowRule {
+        id: RuleId::new("rule-yt-domain"),
+        workflow_id: wf_id.clone(),
+        description: "Allow youtube.com".to_string(),
+        scope: RuleScope::Domain,
+        matcher: RuleMatcher::DomainPattern("youtube.com".to_string()),
+        effect: RuleEffect::Allow,
+        priority_weight: 100,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+
+    // 1. Browser window with youtube in title -> ALLOWED
+    let browser_obs = create_observation(
+        "chrome.exe",
+        "Rust Tutorial - youtube.com - Google Chrome",
+        None,
+        IdleState::Active,
+    );
+    let decision = engine.evaluate(&browser_obs, &wf, &mut timer, now);
+    assert!(
+        decision.is_allowed(),
+        "Browser window should match domain rule: {:?}",
+        decision
+    );
+
+    // 2. Non-browser window with youtube in title (e.g. Discord chat #youtube or Spotify song) -> RESTRICTED
+    let discord_obs = create_observation(
+        "discord.exe",
+        "#youtube-chat - Discord",
+        None,
+        IdleState::Active,
+    );
+    let decision_discord = engine.evaluate(&discord_obs, &wf, &mut timer, now);
+    assert!(
+        decision_discord.is_violation(),
+        "Non-browser application must NOT match domain rule fallback: {:?}",
+        decision_discord
+    );
+
+    let steam_obs = create_observation(
+        "steam.exe",
+        "Steam - youtube fan club",
+        None,
+        IdleState::Active,
+    );
+    let decision_steam = engine.evaluate(&steam_obs, &wf, &mut timer, now);
+    assert!(
+        decision_steam.is_violation(),
+        "Steam must NOT match domain rule fallback: {:?}",
+        decision_steam
+    );
+}
+
+#[test]
+fn test_sqlite_workflow_rule_id_uniqueness_across_multiple_custom_workflows() {
+    let db = SqliteDb::open_in_memory().unwrap();
+    let mut wf_repo = SqliteWorkflowRepository::new(db);
+
+    let wf1_id = WorkflowId::new("wf-custom-1");
+    let mut wf1 = Workflow::new(wf1_id.clone(), "Custom 1".to_string());
+    wf1.rules.push(WorkflowRule {
+        id: RuleId::new(format!("rule-{}-app-0", wf1_id.0)),
+        workflow_id: wf1_id.clone(),
+        description: "Allow code".to_string(),
+        scope: RuleScope::Application,
+        matcher: RuleMatcher::ApplicationName("code.exe".to_string()),
+        effect: RuleEffect::Allow,
+        priority_weight: 10,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    let wf2_id = WorkflowId::new("wf-custom-2");
+    let mut wf2 = Workflow::new(wf2_id.clone(), "Custom 2".to_string());
+    wf2.rules.push(WorkflowRule {
+        id: RuleId::new(format!("rule-{}-app-0", wf2_id.0)),
+        workflow_id: wf2_id.clone(),
+        description: "Allow obsidian".to_string(),
+        scope: RuleScope::Application,
+        matcher: RuleMatcher::ApplicationName("obsidian.exe".to_string()),
+        effect: RuleEffect::Allow,
+        priority_weight: 10,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    // Both should save without UNIQUE constraint error on workflow_rules.id
+    assert!(wf_repo.save(&wf1).is_ok());
+    assert!(wf_repo.save(&wf2).is_ok());
+
+    let loaded1 = wf_repo.get(&wf1_id).unwrap().unwrap();
+    assert_eq!(loaded1.rules.len(), 1);
+    let loaded2 = wf_repo.get(&wf2_id).unwrap().unwrap();
+    assert_eq!(loaded2.rules.len(), 1);
+}
+
+#[test]
+fn test_app_matches_with_and_without_exe_extensions() {
+    use flowguard::domain::workflow::app_matches;
+
+    // Direct and alias matches
+    assert!(app_matches("code.exe", None, "code"));
+    assert!(app_matches("code", None, "code.exe"));
+    assert!(app_matches("code.exe", None, "vs code"));
+    assert!(app_matches("code.exe", None, "visual studio code"));
+
+    assert!(app_matches("windowsterminal.exe", None, "terminal"));
+    assert!(app_matches("cmd.exe", None, "terminal"));
+    assert!(app_matches("powershell.exe", None, "terminal"));
+    assert!(app_matches("pwsh.exe", None, "terminal"));
+
+    assert!(app_matches("msedge.exe", None, "edge"));
+    assert!(app_matches("chrome.exe", None, "chrome"));
+    assert!(app_matches("brave.exe", None, "brave"));
+
+    // Antigravity matching
+    assert!(app_matches("antigravity.exe", None, "antigravity"));
+    assert!(app_matches(
+        "electron.exe",
+        Some("Antigravity - Focus"),
+        "antigravity"
+    ));
+}

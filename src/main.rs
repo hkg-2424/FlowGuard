@@ -255,7 +255,7 @@ fn main() {
             });
             for (idx, app) in allowed_apps.into_iter().enumerate() {
                 wf.rules.push(WorkflowRule {
-                    id: RuleId::new(format!("rule-app-{}", idx)),
+                    id: RuleId::new(format!("rule-{}-app-{}", wf_id.0, idx)),
                     workflow_id: wf_id.clone(),
                     description: format!("Allow application {}", app),
                     scope: RuleScope::Application,
@@ -280,7 +280,7 @@ fn main() {
             });
             for (idx, domain) in allowed_domains.into_iter().enumerate() {
                 wf.rules.push(WorkflowRule {
-                    id: RuleId::new(format!("rule-dom-{}", idx)),
+                    id: RuleId::new(format!("rule-{}-dom-{}", wf_id.0, idx)),
                     workflow_id: wf_id.clone(),
                     description: format!("Allow domain {}", domain),
                     scope: RuleScope::Domain,

@@ -145,8 +145,12 @@ impl GuiEngine {
                     active_poll_counter = 0;
                     match self.service.evaluate_tick() {
                         Ok(eval) => {
-                            // Check if target duration reached for natural auto-completion
-                            let elapsed = eval.session.duration_seconds(chrono::Utc::now());
+                            // Check if target focus duration reached for natural auto-completion
+                            // (Matches GUI elapsed calculation: does not count AFK periods against focus duration)
+                            let elapsed = eval.session.total_focus_seconds
+                                + eval.session.total_grace_seconds
+                                + eval.session.total_distraction_seconds
+                                + eval.session.total_paused_seconds;
                             let target_secs = self
                                 .service
                                 .active_workflow()
@@ -161,6 +165,7 @@ impl GuiEngine {
                                     );
                                     if let Ok(completed_sess) = self.service.complete_session() {
                                         let mut st = self.state.lock().unwrap();
+                                        st.update_activity_feed(&eval.observation);
                                         st.last_observation = Some(eval.observation);
                                         st.active_session = None;
                                         st.active_workflow = None;

@@ -460,16 +460,26 @@ pub fn classify_activity(
         return ("YouTube Video".to_string(), clean, false, false);
     }
 
-    // 5. Social Media Distractions
-    let is_social = url_lower.contains("reddit.com")
+    // 5. Social Media & Entertainment Distractions
+    let is_social_or_streaming = url_lower.contains("reddit.com")
         || title_lower.contains("reddit")
         || url_lower.contains("x.com")
         || url_lower.contains("twitter.com")
         || title_lower.contains("twitter")
+        || url_lower.contains("instagram.com")
+        || title_lower.contains("instagram")
+        || url_lower.contains("facebook.com")
+        || title_lower.contains("facebook")
+        || url_lower.contains("twitch.tv")
+        || title_lower.contains("twitch")
+        || url_lower.contains("netflix.com")
+        || title_lower.contains("netflix")
+        || url_lower.contains("disneyplus.com")
+        || url_lower.contains("primevideo.com")
         || app_lower == "discord.exe"
         || app_lower == "steam.exe";
 
-    if is_social {
+    if is_social_or_streaming {
         let name = if title_lower.contains("reddit") || url_lower.contains("reddit") {
             "Reddit"
         } else if title_lower.contains("twitter")
@@ -477,6 +487,18 @@ pub fn classify_activity(
             || url_lower.contains("twitter")
         {
             "Twitter / X"
+        } else if title_lower.contains("instagram") || url_lower.contains("instagram.com") {
+            "Instagram"
+        } else if title_lower.contains("facebook") || url_lower.contains("facebook.com") {
+            "Facebook"
+        } else if title_lower.contains("twitch") || url_lower.contains("twitch.tv") {
+            "Twitch"
+        } else if title_lower.contains("netflix") || url_lower.contains("netflix.com") {
+            "Netflix"
+        } else if url_lower.contains("disneyplus.com") {
+            "Disney+"
+        } else if url_lower.contains("primevideo.com") {
+            "Prime Video"
         } else if app_lower == "discord.exe" {
             "Discord"
         } else if app_lower == "steam.exe" {
@@ -484,7 +506,8 @@ pub fn classify_activity(
         } else {
             "Social Media"
         };
-        return (name.to_string(), title_trim.to_string(), true, false);
+        let clean = clean_media_title(title_trim);
+        return (name.to_string(), clean, true, false);
     }
 
     // 6. Development & Coding
@@ -582,11 +605,24 @@ pub fn classify_activity(
 }
 
 fn clean_media_title(raw: &str) -> String {
-    raw.replace(" - YouTube", "")
-        .replace(" - Google Chrome", "")
-        .replace(" - Brave", "")
-        .replace(" - Microsoft Edge", "")
-        .replace(" - Mozilla Firefox", "")
-        .trim()
-        .to_string()
+    let mut s = raw.to_string();
+    let suffixes = [
+        " - YouTube",
+        " • Instagram",
+        " | Netflix",
+        " - Netflix",
+        " - Twitch",
+        " - Google Chrome",
+        " — Google Chrome",
+        " - Brave",
+        " — Brave",
+        " - Microsoft Edge",
+        " — Microsoft Edge",
+        " - Mozilla Firefox",
+        " — Mozilla Firefox",
+    ];
+    for suffix in suffixes {
+        s = s.replace(suffix, "");
+    }
+    s.trim().to_string()
 }

@@ -98,7 +98,12 @@ document.addEventListener('DOMContentLoaded', () => {
   startLivePolling();
   updateSoundButtonUI();
 
-  // Global Escape key listener: dismisses any open modal immediately
+function syncModalBodyLock() {
+  const hasOpenModal = !!document.querySelector('.modal-backdrop:not(.hidden)');
+  document.body.classList.toggle('modal-open', hasOpenModal);
+}
+
+// Global Escape key listener: dismisses any open modal immediately
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeCreateWorkflowModal();
@@ -106,6 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
       closeAccountableModal();
       closeUnbreakableModal();
       closeDriftModal();
+      syncModalBodyLock();
     }
   });
 });
@@ -138,11 +144,13 @@ function startTour(isManual) {
   tourStep = 1;
   updateTourStepUI();
   document.getElementById('modal-tour').classList.remove('hidden');
+  syncModalBodyLock();
 }
 
 function closeTour() {
   document.getElementById('modal-tour').classList.add('hidden');
   localStorage.setItem('flowguard_onboarding_completed', 'true');
+  syncModalBodyLock();
 }
 
 function nextTourStep() {
@@ -307,6 +315,7 @@ function openCreateWorkflowModal() {
   renderSelectedTags();
   loadRunningApps();
   document.getElementById('modal-create-workflow').classList.remove('hidden');
+  syncModalBodyLock();
 }
 
 function forkWorkflowPreset(wfId) {
@@ -332,10 +341,12 @@ function forkWorkflowPreset(wfId) {
   renderSelectedTags();
   loadRunningApps();
   document.getElementById('modal-create-workflow').classList.remove('hidden');
+  syncModalBodyLock();
 }
 
 function closeCreateWorkflowModal() {
   document.getElementById('modal-create-workflow').classList.add('hidden');
+  syncModalBodyLock();
 }
 
 async function loadRunningApps() {
@@ -422,11 +433,11 @@ function addCustomDomain() {
       const parsed = new URL(domain);
       domain = parsed.hostname;
     } else {
-      domain = domain.split('/')[0].split('?')[0];
+      domain = domain.split('/')[0].split('?')[0].split(':')[0];
     }
     domain = domain.replace(/^www\./, '');
   } catch (_) {
-    domain = domain.split('/')[0].split('?')[0].replace(/^www\./, '');
+    domain = domain.split('/')[0].split('?')[0].split(':')[0].replace(/^www\./, '');
   }
 
   if (domain.length < 3) {
@@ -505,7 +516,6 @@ function renderSelectedTags() {
     const statusSpan = btn.querySelector('.chip-status');
     if (statusSpan) statusSpan.textContent = isSel ? '✓' : '+';
   });
-}
 }
 
 function escapeJs(str) {
@@ -971,6 +981,7 @@ function handleEndSessionClick() {
   if (contract === 'Unbreakable') {
     // Ulysses lock: forbid cancellation
     document.getElementById('modal-unbreakable-warning').classList.remove('hidden');
+    syncModalBodyLock();
     return;
   }
 
@@ -981,6 +992,7 @@ function handleEndSessionClick() {
     document.getElementById('exit-reason-input').value = '';
     updateReasonCharCount();
     document.getElementById('modal-accountable-exit').classList.remove('hidden');
+    syncModalBodyLock();
     return;
   }
 
@@ -1004,10 +1016,12 @@ function updateReasonCharCount() {
 
 function closeAccountableModal() {
   document.getElementById('modal-accountable-exit').classList.add('hidden');
+  syncModalBodyLock();
 }
 
 function closeUnbreakableModal() {
   document.getElementById('modal-unbreakable-warning').classList.add('hidden');
+  syncModalBodyLock();
 }
 
 async function submitEarlyExit() {
@@ -1026,14 +1040,14 @@ async function stopSessionDirect(reason) {
 
     if (!res.ok) {
       const err = await res.json();
-      alert('Error ending session: ' + (err.error || res.statusText));
+      showToast('Error ending session: ' + (err.error || res.statusText), 'error');
       return;
     }
 
     pollSession();
     loadHistory();
   } catch (err) {
-    alert('Error stopping session: ' + err.message);
+    showToast('Error stopping session: ' + err.message, 'error');
   }
 }
 
@@ -1117,8 +1131,8 @@ function viewDrifts(sessionId) {
       <div class="app-avatar">⚠️</div>
       <div class="app-details">
         <div class="app-name-row">
-          <span class="app-exe">${d.target_name}</span>
-          <span class="policy-chip chip-allowed">${d.resolution}</span>
+          <span class="app-exe">${escapeHtml(d.target_name)}</span>
+          <span class="policy-chip chip-allowed">${escapeHtml(d.resolution)}</span>
         </div>
         <div class="text-xs text-muted">${new Date(d.timestamp).toLocaleTimeString()} — Distraction Duration: ${d.duration_seconds}s</div>
       </div>
@@ -1126,10 +1140,12 @@ function viewDrifts(sessionId) {
   `).join('');
 
   document.getElementById('modal-drift-events').classList.remove('hidden');
+  syncModalBodyLock();
 }
 
 function closeDriftModal() {
   document.getElementById('modal-drift-events').classList.add('hidden');
+  syncModalBodyLock();
 }
 
 // -----------------------------------------------------------------------------

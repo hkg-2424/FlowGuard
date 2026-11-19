@@ -150,10 +150,36 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
                 }
             };
 
-            let wf_id = WorkflowId::new(format!(
-                "wf-{}",
-                req_data.name.to_lowercase().replace(' ', "-")
-            ));
+            let mut repo = SqliteWorkflowRepository::new(ctx.db.clone());
+            let base_slug: String = req_data
+                .name
+                .trim()
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect();
+            let base_slug = base_slug.trim_matches('-');
+            let base_slug = if base_slug.is_empty() {
+                "custom"
+            } else {
+                base_slug
+            };
+
+            let mut id_candidate = format!("wf-{}", base_slug);
+            if repo
+                .get(&WorkflowId::new(&id_candidate))
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                id_candidate = format!(
+                    "{}-{}",
+                    id_candidate,
+                    chrono::Utc::now().timestamp_millis() % 1_000_000
+                );
+            }
+            let wf_id = WorkflowId::new(id_candidate);
+
             let mut wf = Workflow::new(wf_id.clone(), req_data.name);
             wf.description = req_data.description.unwrap_or_default();
             wf.target_duration_minutes = req_data.duration_minutes;
@@ -171,7 +197,7 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
 
             for (idx, app) in req_data.allowed_apps.into_iter().enumerate() {
                 wf.rules.push(WorkflowRule {
-                    id: RuleId::new(format!("rule-app-{}", idx)),
+                    id: RuleId::new(format!("rule-{}-app-{}", wf_id.0, idx)),
                     workflow_id: wf_id.clone(),
                     description: format!("Allow application {}", app),
                     scope: RuleScope::Application,
@@ -186,7 +212,7 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
 
             for (idx, dom) in req_data.allowed_domains.into_iter().enumerate() {
                 wf.rules.push(WorkflowRule {
-                    id: RuleId::new(format!("rule-dom-{}", idx)),
+                    id: RuleId::new(format!("rule-{}-dom-{}", wf_id.0, idx)),
                     workflow_id: wf_id.clone(),
                     description: format!("Allow domain {}", dom),
                     scope: RuleScope::Domain,
@@ -198,8 +224,6 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
                     expires_at: None,
                 });
             }
-
-            let mut repo = SqliteWorkflowRepository::new(ctx.db.clone());
             if let Err(e) = repo.save(&wf) {
                 respond_error(request, 500, &format!("Failed to save workflow: {}", e));
             } else {

@@ -877,6 +877,10 @@ body {
 .badge-score-med { background-color: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
 .badge-score-low { background-color: rgba(239, 68, 68, 0.15); color: var(--accent-rose); }
 
+body.modal-open {
+  overflow: hidden !important;
+}
+
 /* Modals */
 .modal-backdrop {
   position: fixed;
@@ -892,6 +896,7 @@ body {
   z-index: 100;
   animation: fadeIn 0.2s ease;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 30px 16px;
 }
 
@@ -907,6 +912,7 @@ body {
   position: relative;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
   margin: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-header {
@@ -944,6 +950,7 @@ body {
 .modal-body {
   padding: 20px 28px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   flex: 1 1 auto;
 }
 

@@ -5,7 +5,7 @@ pub mod session;
 pub mod timer;
 
 pub use decision::{PolicyDecision, PolicyReason};
-pub use engine::{parse_canonical_resource, RuleEngine};
+pub use engine::{app_matches, parse_canonical_resource, RuleEngine};
 pub use entities::{
     CanonicalResource, CommitmentContract, DriftEvent, RuleEffect, RuleId, RuleMatcher, RuleScope,
     Workflow, WorkflowId, WorkflowRule,
