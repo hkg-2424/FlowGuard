@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 Cargo.lock
+*.exe
 
 # ==========================================
 # Rust build artifacts
