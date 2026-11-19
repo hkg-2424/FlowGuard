@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FlowGuard — Focus &amp; Productivity Assistant</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
   <!-- Top Navigation Header -->
@@ -549,13 +546,19 @@
         <!-- Selected Summary Box (Pinned at the Top for Instant Feedback) -->
         <div class="selected-summary-box mt-3">
           <div class="summary-line">
-            <span class="summary-label">Selected Applications:</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span class="summary-label" id="selected-apps-count-label">Selected Applications (0):</span>
+              <button type="button" class="btn btn-ghost btn-xs text-muted" onclick="clearAllSelectedApps()" id="btn-clear-apps" style="display:none;">Clear Apps</button>
+            </div>
             <div class="tags-container" id="selected-apps-container">
               <span class="text-muted text-xs">No apps selected yet (will allow all unless specified)</span>
             </div>
           </div>
           <div class="summary-line mt-2">
-            <span class="summary-label">Selected Websites:</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span class="summary-label" id="selected-domains-count-label">Selected Websites (0):</span>
+              <button type="button" class="btn btn-ghost btn-xs text-muted" onclick="clearAllSelectedDomains()" id="btn-clear-domains" style="display:none;">Clear Sites</button>
+            </div>
             <div class="tags-container" id="selected-domains-container">
               <span class="text-muted text-xs">No websites selected (will allow all unless specified)</span>
             </div>

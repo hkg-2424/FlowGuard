@@ -155,7 +155,22 @@ impl GuiEngine {
                                 .service
                                 .active_workflow()
                                 .and_then(|w| w.target_duration_minutes)
-                                .map(|m| m as u64 * 60);
+                                .map(|m| m as u64 * 60)
+                                .or_else(|| {
+                                    if let Some(
+                                        crate::domain::workflow::CommitmentContract::Unbreakable {
+                                            target_duration_seconds,
+                                        },
+                                    ) = self
+                                        .service
+                                        .active_session()
+                                        .map(|s| &s.commitment_contract)
+                                    {
+                                        Some(*target_duration_seconds)
+                                    } else {
+                                        None
+                                    }
+                                });
 
                             if let Some(target) = target_secs {
                                 if elapsed >= target {
@@ -169,6 +184,7 @@ impl GuiEngine {
                                         st.last_observation = Some(eval.observation);
                                         st.active_session = None;
                                         st.active_workflow = None;
+                                        st.last_pull_back = None;
                                         st.last_decision = Some(crate::domain::workflow::PolicyDecision::Allowed {
                                             rule_id: crate::domain::workflow::RuleId::new("completed"),
                                             scope: crate::domain::workflow::RuleScope::WorkflowDefault,

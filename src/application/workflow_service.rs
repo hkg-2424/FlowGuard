@@ -132,6 +132,7 @@ impl WorkflowService {
 
         session.pause()?;
         self.timer.pause();
+        self.last_tick_time = None;
         self.session_repo.save(session)?;
         info!("Paused workflow session '{}'", session.id);
         Ok(())
@@ -145,6 +146,7 @@ impl WorkflowService {
             .ok_or(WorkflowServiceError::NoActiveSession)?;
 
         session.resume()?;
+        self.last_tick_time = Some(std::time::Instant::now());
         self.session_repo.save(session)?;
         info!("Resumed workflow session '{}'", session.id);
         Ok(())
@@ -211,6 +213,7 @@ impl WorkflowService {
         if session.state == SessionState::Paused {
             let obs = self.source.poll()?;
             session.total_paused_seconds += (self.poll_interval.as_millis() / 1000).max(1) as u64;
+            self.last_tick_time = Some(std::time::Instant::now());
             return Ok(SessionEvaluation {
                 observation: obs,
                 decision: PolicyDecision::Ignored {
@@ -231,21 +234,36 @@ impl WorkflowService {
         // Check if user just self-corrected from a grace violation back to an allowed context!
         let mut pull_back_event: Option<DriftEvent> = None;
         if was_violating && decision.is_allowed() {
-            if let Some(DriftResolution::SelfCorrected { recovery_seconds }) =
-                self.timer.take_last_resolution()
-            {
-                session.pull_back_count += 1;
+            if let Some(res) = self.timer.take_last_resolution() {
                 let target_name = violation_target
                     .unwrap_or_else(|| obs.application.clone().unwrap_or_else(|| "unknown".into()));
-                let event = DriftEvent {
-                    session_id: session.id.clone(),
-                    target_name,
-                    duration_seconds: recovery_seconds,
-                    resolution: DriftResolution::SelfCorrected { recovery_seconds },
-                    timestamp: now,
-                };
-                let _ = self.session_repo.record_drift(&event);
-                pull_back_event = Some(event);
+                match res {
+                    DriftResolution::SelfCorrected { recovery_seconds } => {
+                        session.pull_back_count += 1;
+                        let event = DriftEvent {
+                            session_id: session.id.clone(),
+                            target_name,
+                            duration_seconds: recovery_seconds,
+                            resolution: DriftResolution::SelfCorrected { recovery_seconds },
+                            timestamp: now,
+                        };
+                        let _ = self.session_repo.record_drift(&event);
+                        pull_back_event = Some(event);
+                    }
+                    DriftResolution::Intervened => {
+                        let duration_seconds = (session.total_grace_seconds
+                            + session.total_distraction_seconds)
+                            .max(30) as u32;
+                        let event = DriftEvent {
+                            session_id: session.id.clone(),
+                            target_name,
+                            duration_seconds,
+                            resolution: DriftResolution::Intervened,
+                            timestamp: now,
+                        };
+                        let _ = self.session_repo.record_drift(&event);
+                    }
+                }
             }
         }
 

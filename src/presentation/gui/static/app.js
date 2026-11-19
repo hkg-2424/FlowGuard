@@ -8,7 +8,7 @@ let livePollInterval = null;
 let currentSessionSnapshot = null;
 let cachedWorkflows = [];
 let cachedHistory = [];
-let lastCelebratedPullBackTime = 0;
+let lastCelebratedPullBackTime = parseInt(localStorage.getItem('flowguard_last_pullback_time') || '0', 10);
 let previousPolicyStatus = 'None';
 
 // Web Audio API Synthesized Audio Cues
@@ -91,6 +91,11 @@ function updateSoundButtonUI() {
   if (label) label.textContent = soundEnabled ? 'Audio On' : 'Muted';
 }
 
+function syncModalBodyLock() {
+  const hasOpenModal = !!document.querySelector('.modal-backdrop:not(.hidden)');
+  document.body.classList.toggle('modal-open', hasOpenModal);
+}
+
 // Initialize on DOM Ready
 document.addEventListener('DOMContentLoaded', () => {
   checkFirstLaunchTour();
@@ -98,12 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
   startLivePolling();
   updateSoundButtonUI();
 
-function syncModalBodyLock() {
-  const hasOpenModal = !!document.querySelector('.modal-backdrop:not(.hidden)');
-  document.body.classList.toggle('modal-open', hasOpenModal);
-}
-
-// Global Escape key listener: dismisses any open modal immediately
+  // Global Escape key listener: dismisses any open modal immediately
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeCreateWorkflowModal();
@@ -230,16 +230,20 @@ function renderWorkflows(workflows) {
     const contractClass = wf.contract_type.toLowerCase().includes('unbreakable') ? 'badge-danger' :
                           wf.contract_type.toLowerCase().includes('accountable') ? 'badge-warning' : 'badge-standard';
 
-    const appTags = wf.allowed_apps.slice(0, 4).map(app => `<span class="wf-tag">${app}</span>`).join('');
-    const domainTags = wf.allowed_domains.slice(0, 3).map(dom => `<span class="wf-tag">${dom}</span>`).join('');
+    const appTags = (wf.allowed_apps || []).slice(0, 4).map(app => `<span class="wf-tag">${escapeHtml(app)}</span>`).join('');
+    const domainTags = (wf.allowed_domains || []).slice(0, 3).map(dom => `<span class="wf-tag">${escapeHtml(dom)}</span>`).join('');
+    const isCustom = !['wf-study', 'wf-deep-work', 'wf-coding', 'wf-reading'].includes(wf.id);
 
     return `
       <div class="workflow-card">
         <div class="workflow-card-header">
           <div class="wf-icon-wrap">${icon}</div>
-          <span class="wf-badge-contract ${contractClass}">${wf.contract_type}</span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="wf-badge-contract ${contractClass}">${escapeHtml(wf.contract_type)}</span>
+            ${isCustom ? `<button class="btn btn-ghost btn-xs text-muted" onclick="deleteWorkflow('${escapeJs(wf.id)}')" title="Delete custom workflow">✕</button>` : ''}
+          </div>
         </div>
-        <h3 class="wf-title">${wf.name}</h3>
+        <h3 class="wf-title">${escapeHtml(wf.name)}</h3>
         <div class="wf-duration">Target: ${duration}</div>
 
         <div class="wf-rules-list">
@@ -254,13 +258,13 @@ function renderWorkflows(workflows) {
         </div>
 
         <div class="wf-actions-row">
-          <button class="btn btn-primary btn-md flex-1" onclick="startWorkflowSession('${wf.id}')">
+          <button class="btn btn-primary btn-md flex-1" onclick="startWorkflowSession('${escapeJs(wf.id)}')">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
             Start Focus Session
           </button>
-          <button class="btn btn-secondary btn-md" onclick="forkWorkflowPreset('${wf.id}')" title="Copy &amp; Customize preset">
+          <button class="btn btn-secondary btn-md" onclick="forkWorkflowPreset('${escapeJs(wf.id)}')" title="Copy &amp; Customize preset">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -451,7 +455,37 @@ function addCustomDomain() {
   showToast(`Added allowed site: ${domain}`, 'success');
 }
 
+function clearAllSelectedApps() {
+  selectedApps.clear();
+  renderSelectedTags();
+  renderOpenAppsChips();
+}
+
+function clearAllSelectedDomains() {
+  selectedDomains.clear();
+  renderSelectedTags();
+}
+
 function renderSelectedTags() {
+  // Update header counts and clear button visibility
+  const appsCountLabel = document.getElementById('selected-apps-count-label');
+  if (appsCountLabel) {
+    appsCountLabel.textContent = `Selected Applications (${selectedApps.size}):`;
+  }
+  const btnClearApps = document.getElementById('btn-clear-apps');
+  if (btnClearApps) {
+    btnClearApps.style.display = selectedApps.size > 0 ? 'inline-block' : 'none';
+  }
+
+  const domainsCountLabel = document.getElementById('selected-domains-count-label');
+  if (domainsCountLabel) {
+    domainsCountLabel.textContent = `Selected Websites (${selectedDomains.size}):`;
+  }
+  const btnClearDomains = document.getElementById('btn-clear-domains');
+  if (btnClearDomains) {
+    btnClearDomains.style.display = selectedDomains.size > 0 ? 'inline-block' : 'none';
+  }
+
   // 1. Render Apps Tags
   const appsContainer = document.getElementById('selected-apps-container');
   if (appsContainer) {
@@ -519,7 +553,12 @@ function renderSelectedTags() {
 }
 
 function escapeJs(str) {
-  return (str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return (str || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 async function submitCreateWorkflow() {
@@ -535,16 +574,6 @@ async function submitCreateWorkflow() {
   const allowed_apps = Array.from(selectedApps.keys());
   const allowed_domains = Array.from(selectedDomains.keys());
 
-  // Smart browser auto-inclusion: if websites are allowed, ensure browsers are permitted
-  if (allowed_domains.length > 0) {
-    const commonBrowsers = ['chrome.exe', 'msedge.exe', 'brave.exe', 'firefox.exe'];
-    for (const b of commonBrowsers) {
-      if (!allowed_apps.includes(b)) {
-        allowed_apps.push(b);
-      }
-    }
-  }
-
   try {
     const res = await fetch('/api/workflows', {
       method: 'POST',
@@ -559,12 +588,31 @@ async function submitCreateWorkflow() {
       })
     });
 
-    if (!res.ok) throw new Error('Failed to create workflow');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to create workflow' }));
+      throw new Error(err.error || res.statusText);
+    }
     closeCreateWorkflowModal();
     showToast(`Workflow "${name}" created successfully!`, 'success');
     loadWorkflows();
   } catch (err) {
     showToast('Error creating workflow: ' + err.message, 'error');
+  }
+}
+
+async function deleteWorkflow(wfId) {
+  if (!confirm('Are you sure you want to delete this custom workflow?')) return;
+  try {
+    const res = await fetch(`/api/workflows/${encodeURIComponent(wfId)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Delete failed' }));
+      showToast('Could not delete workflow: ' + (err.error || res.statusText), 'error');
+      return;
+    }
+    showToast('Workflow deleted', 'info');
+    loadWorkflows();
+  } catch (err) {
+    showToast('Error deleting workflow: ' + err.message, 'error');
   }
 }
 
@@ -752,7 +800,7 @@ function renderSession(snap) {
     policyChip.className = 'policy-chip chip-distraction';
     policyChip.textContent = 'Distraction Episode';
     livePrompt.textContent = 'Intervention required: Return to your authorized focus window now.';
-    promptBox.className = 'live-prompt-box in-grace';
+    promptBox.className = 'live-prompt-box in-intervention';
   } else {
     policyChip.className = 'policy-chip';
     policyChip.textContent = snap.policy_status;
@@ -768,7 +816,20 @@ function renderSession(snap) {
 
   // Pause / Resume Button
   const pauseBtn = document.getElementById('btn-pause-text');
-  pauseBtn.textContent = snap.state === 'Paused' ? 'Resume' : 'Pause';
+  const pauseButtonEl = document.getElementById('btn-pause-session');
+  if (snap.contract_type === 'Unbreakable') {
+    if (pauseButtonEl) {
+      pauseButtonEl.disabled = true;
+      pauseButtonEl.title = 'Unbreakable (Ulysses) sessions cannot be paused';
+    }
+    pauseBtn.textContent = 'Locked';
+  } else {
+    if (pauseButtonEl) {
+      pauseButtonEl.disabled = false;
+      pauseButtonEl.title = 'Pause or resume your focus timer';
+    }
+    pauseBtn.textContent = snap.state === 'Paused' ? 'Resume' : 'Pause';
+  }
 
   previousPolicyStatus = snap.policy_status;
 }
@@ -914,19 +975,22 @@ function escapeHtml(str) {
 }
 
 function playGentleChime() {
+  if (!soundEnabled) return;
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    initAudio();
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
-    gain.gain.setValueAtTime(0.12, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc.frequency.setValueAtTime(587.33, now); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, now + 0.15); // A5
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
     osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.35);
+    gain.connect(audioContext.destination);
+    osc.start(now);
+    osc.stop(now + 0.35);
   } catch (e) {
     // Ignore audio autoplay restrictions
   }
@@ -936,6 +1000,7 @@ function playGentleChime() {
 // SESSION CONTROL ACTIONS
 // -----------------------------------------------------------------------------
 async function startWorkflowSession(workflowId) {
+  initAudio();
   try {
     const res = await fetch('/api/session/start', {
       method: 'POST',
@@ -958,15 +1023,24 @@ async function startWorkflowSession(workflowId) {
 
 async function togglePauseResume() {
   if (!currentSessionSnapshot) return;
+  if (currentSessionSnapshot.contract_type === 'Unbreakable') {
+    showToast('Unbreakable (Ulysses) sessions cannot be paused.', 'error');
+    return;
+  }
+  initAudio();
   const isPaused = currentSessionSnapshot.state === 'Paused';
   const endpoint = isPaused ? '/api/session/resume' : '/api/session/pause';
 
   try {
     const res = await fetch(endpoint, { method: 'POST' });
-    if (!res.ok) throw new Error('Action failed');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Action failed' }));
+      showToast('Pause/Resume error: ' + (err.error || res.statusText), 'error');
+      return;
+    }
     pollSession();
   } catch (err) {
-    console.error(err);
+    showToast('Network error: ' + err.message, 'error');
   }
 }
 
@@ -1107,14 +1181,14 @@ function renderHistory(sessions) {
     return `
       <tr>
         <td>${dateStr}</td>
-        <td><strong>${s.workflow_name}</strong></td>
-        <td><span class="status-badge">${s.state}</span></td>
+        <td><strong>${escapeHtml(s.workflow_name)}</strong></td>
+        <td><span class="status-badge">${escapeHtml(s.state)}</span></td>
         <td>${formatNatural(s.total_focus_seconds)}</td>
         <td><span class="badge-score ${scoreBadge}">${s.quality_score.toFixed(1)}%</span></td>
         <td>${s.pull_back_count}</td>
-        <td class="text-xs text-muted" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${exitNote}</td>
+        <td class="text-xs text-muted" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(exitNote)}</td>
         <td>
-          ${hasDrifts ? `<button class="btn btn-secondary btn-sm" onclick="viewDrifts('${s.id}')">View Drifts (${s.drifts.length})</button>` : '<span class="text-muted text-xs">No Drifts</span>'}
+          ${hasDrifts ? `<button class="btn btn-secondary btn-sm" onclick="viewDrifts('${escapeJs(s.id)}')">View Drifts (${s.drifts.length})</button>` : '<span class="text-muted text-xs">No Drifts</span>'}
         </td>
       </tr>
     `;

@@ -48,6 +48,14 @@ pub fn launch_desktop_gui(
     let mut wf_repo = SqliteWorkflowRepository::new(db.clone());
     seed::seed_default_workflows_if_empty(&mut wf_repo);
 
+    // Clean up any dangling unclosed sessions from previous unclean shutdowns
+    if let Ok(conn) = db.lock() {
+        let _ = conn.execute(
+            "UPDATE sessions SET state = 'Interrupted', end_time = datetime('now') WHERE state IN ('Active', 'Paused')",
+            [],
+        );
+    }
+
     // Instantiate activity observation source
     let source = create_activity_source(config);
     let source_name = if config.activity_source.provider.to_lowercase() == "native_windows" {

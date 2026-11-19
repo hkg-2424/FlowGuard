@@ -175,6 +175,11 @@ impl GuiState {
     }
 
     pub fn update_activity_feed(&mut self, obs: &ActivityObservation) {
+        if obs.idle_state == crate::domain::IdleState::Afk {
+            // AFK state: freeze activity timer so idle time is never attributed to productive or distraction
+            return;
+        }
+
         let app_name = obs
             .application
             .clone()
@@ -249,20 +254,37 @@ impl GuiState {
                     .and_then(|u| url::Url::parse(u).ok())
                     .and_then(|u| u.host_str().map(|h| h.to_string()))
                     .or_else(|| {
-                        // If no browser url, check if title has a domain
+                        // If no browser url, check if window belongs to a browser and title indicates a domain
+                        let is_browser = obs.browser.is_some()
+                            || obs
+                                .application
+                                .as_deref()
+                                .map(crate::domain::workflow::engine::is_browser_app)
+                                .unwrap_or(false);
+                        if !is_browser {
+                            return None;
+                        }
+
                         obs.window_title.as_deref().and_then(|t| {
                             let t_lower = t.to_lowercase();
-                            if t_lower.contains("github") {
+                            if t_lower.contains("github.com") || t_lower.contains("github") {
                                 Some("github.com".to_string())
-                            } else if t_lower.contains("wikipedia") {
+                            } else if t_lower.contains("wikipedia.org")
+                                || t_lower.contains("wikipedia")
+                            {
                                 Some("wikipedia.org".to_string())
-                            } else if t_lower.contains("rust") {
+                            } else if t_lower.contains("doc.rust-lang.org")
+                                || t_lower.contains("rust-lang.org")
+                            {
                                 Some("doc.rust-lang.org".to_string())
-                            } else if t_lower.contains("leetcode") {
+                            } else if t_lower.contains("leetcode.com")
+                                || t_lower.contains("leetcode")
+                            {
                                 Some("leetcode.com".to_string())
-                            } else if t_lower.contains("youtube") {
+                            } else if t_lower.contains("youtube.com") || t_lower.contains("youtube")
+                            {
                                 Some("youtube.com".to_string())
-                            } else if t_lower.contains("reddit") {
+                            } else if t_lower.contains("reddit.com") || t_lower.contains("reddit") {
                                 Some("reddit.com".to_string())
                             } else {
                                 None
@@ -325,12 +347,10 @@ impl GuiState {
 
             let target_duration_secs = target_duration_mins.map(|m| (m as u64) * 60);
 
-            let total_tracked = session.total_focus_seconds
-                + session.total_grace_seconds
-                + session.total_distraction_seconds;
+            let total_effective = session.total_focus_seconds + session.total_distraction_seconds;
 
-            let quality_score = if total_tracked > 0 {
-                (session.total_focus_seconds as f64 / total_tracked as f64) * 100.0
+            let quality_score = if total_effective > 0 {
+                (session.total_focus_seconds as f64 / total_effective as f64) * 100.0
             } else {
                 100.0
             };
@@ -428,10 +448,16 @@ pub fn classify_activity(
 
     // 1. YouTube Shorts Detection
     let is_yt_shorts = url_lower.contains("/shorts/")
-        || (title_lower.contains("youtube")
+        || ((title_lower.contains("youtube") || url_lower.contains("youtube.com"))
             && (title_lower.contains("#shorts")
-                || title_lower.contains("shorts")
-                || title_lower.starts_with("shorts -")));
+                || title_lower.contains("#short")
+                || title_lower.contains("#ytshorts")
+                || title_lower.contains("#viralshort")
+                || title_lower.contains("#viralshorts")
+                || title_lower.contains("short video")
+                || title_lower.starts_with("shorts -")
+                || title_lower.contains(" - shorts")
+                || title_lower.contains("shorts")));
 
     if is_yt_shorts {
         let clean = clean_media_title(title_trim);
@@ -441,7 +467,10 @@ pub fn classify_activity(
     // 2. Instagram Reels Detection
     let is_ig_reels = url_lower.contains("instagram.com/reels/")
         || url_lower.contains("instagram.com/reel/")
-        || (title_lower.contains("instagram") && title_lower.contains("reel"));
+        || ((title_lower.contains("instagram") || url_lower.contains("instagram.com"))
+            && (title_lower.contains("#reel")
+                || title_lower.contains("#reels")
+                || title_lower.contains("reel")));
 
     if is_ig_reels {
         let clean = clean_media_title(title_trim);

@@ -647,3 +647,157 @@ fn test_app_matches_with_and_without_exe_extensions() {
         "antigravity"
     ));
 }
+
+#[test]
+fn test_shorts_and_reels_restricted_even_if_parent_browser_or_domain_allowed() {
+    let mut wf = Workflow::new(WorkflowId::new("wf-study"), "Study".to_string());
+    wf.default_grace_period_seconds = 30;
+    wf.rules.push(WorkflowRule {
+        id: RuleId::new("allow-brave"),
+        workflow_id: wf.id.clone(),
+        description: "Allow Brave".to_string(),
+        scope: RuleScope::Application,
+        matcher: RuleMatcher::ApplicationName("brave.exe".to_string()),
+        effect: RuleEffect::Allow,
+        priority_weight: 10,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+    wf.rules.push(WorkflowRule {
+        id: RuleId::new("allow-youtube"),
+        workflow_id: wf.id.clone(),
+        description: "Allow YouTube".to_string(),
+        scope: RuleScope::Domain,
+        matcher: RuleMatcher::DomainPattern("youtube.com".to_string()),
+        effect: RuleEffect::Allow,
+        priority_weight: 20,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+
+    // 1. Regular YouTube lecture -> Allowed
+    let lecture_obs = create_observation(
+        "brave.exe",
+        "Rust Tutorial Full Course - YouTube - Brave",
+        Some("https://www.youtube.com/watch?v=12345678901"),
+        IdleState::Active,
+    );
+    let dec_lecture = engine.evaluate(&lecture_obs, &wf, &mut timer, now);
+    assert!(
+        dec_lecture.is_allowed(),
+        "Long-form lecture must be allowed"
+    );
+
+    // 2. YouTube Shorts with URL -> RESTRICTED
+    let shorts_url_obs = create_observation(
+        "brave.exe",
+        "Viral Dance - YouTube - Brave",
+        Some("https://www.youtube.com/shorts/12345678901"),
+        IdleState::Active,
+    );
+    let dec_shorts_url = engine.evaluate(&shorts_url_obs, &wf, &mut timer, now);
+    assert!(
+        dec_shorts_url.is_violation(),
+        "Shorts URL must be restricted"
+    );
+
+    // 3. YouTube Shorts with title marker #viralshort (native Win32 title without URL) -> RESTRICTED
+    let shorts_title_obs = create_observation(
+        "brave.exe",
+        "Moments Jesus PROTECTION #viralshort#holyguard #aesthetic - YouTube - Brave",
+        None,
+        IdleState::Active,
+    );
+    let dec_shorts_title = engine.evaluate(&shorts_title_obs, &wf, &mut timer, now);
+    assert!(
+        dec_shorts_title.is_violation(),
+        "Shorts title with #viralshort must be restricted"
+    );
+
+    // 4. Instagram Reels -> RESTRICTED
+    let ig_reels_obs = create_observation(
+        "msedge.exe",
+        "Watch trending reels • Instagram - Edge",
+        Some("https://www.instagram.com/reels/xyz/"),
+        IdleState::Active,
+    );
+    let dec_ig = engine.evaluate(&ig_reels_obs, &wf, &mut timer, now);
+    assert!(dec_ig.is_violation(), "Instagram Reels must be restricted");
+}
+
+#[test]
+fn test_unbreakable_completes_when_target_reached_without_error() {
+    let mut session = WorkflowSession::new(
+        SessionId::new("sess_unbreakable_test"),
+        WorkflowId::new("wf-lock"),
+        CommitmentContract::Unbreakable {
+            target_duration_seconds: 1500, // 25 min
+        },
+    );
+    session.start().unwrap();
+
+    // Before target reached: cancel returns error
+    session.total_focus_seconds = 600;
+    assert!(session.cancel(None).is_err());
+
+    // After target reached (elapsed >= 1500s): cancel naturally completes!
+    session.total_focus_seconds = 1501;
+    let res = session.cancel(None);
+    assert!(
+        res.is_ok(),
+        "Unbreakable session must complete when target reached: {:?}",
+        res
+    );
+    assert_eq!(session.state, SessionState::Completed);
+}
+
+#[test]
+fn test_intervened_drift_events_persisted_in_session_repo() {
+    let db = SqliteDb::open_in_memory().unwrap();
+    let mut repo = SqliteSessionRepository::new(db);
+
+    let sess_id = SessionId::new("sess_drift_test");
+    let mut session = WorkflowSession::new(
+        sess_id.clone(),
+        WorkflowId::new("wf-test"),
+        CommitmentContract::Standard,
+    );
+    session.start().unwrap();
+    repo.save(&session).unwrap();
+
+    // Record self-corrected drift
+    let drift_self = flowguard::domain::workflow::DriftEvent {
+        session_id: sess_id.clone(),
+        target_name: "steam.exe".to_string(),
+        duration_seconds: 12,
+        resolution: DriftResolution::SelfCorrected {
+            recovery_seconds: 12,
+        },
+        timestamp: Utc::now(),
+    };
+    assert!(repo.record_drift(&drift_self).is_ok());
+
+    // Record intervened drift
+    let drift_intervened = flowguard::domain::workflow::DriftEvent {
+        session_id: sess_id.clone(),
+        target_name: "discord.exe".to_string(),
+        duration_seconds: 35,
+        resolution: DriftResolution::Intervened,
+        timestamp: Utc::now(),
+    };
+    assert!(repo.record_drift(&drift_intervened).is_ok());
+
+    let drifts = repo.list_drifts(&sess_id).unwrap();
+    assert_eq!(drifts.len(), 2);
+    assert!(matches!(
+        drifts[0].resolution,
+        DriftResolution::SelfCorrected { .. }
+    ));
+    assert!(matches!(drifts[1].resolution, DriftResolution::Intervened));
+}

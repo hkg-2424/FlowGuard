@@ -224,12 +224,20 @@ fn main() {
         }) => {
             use flowguard::application::ports::{SessionRepository, WorkflowRepository};
 
+            let is_unbreakable = contract.to_lowercase().contains("unbreakable")
+                || contract.to_lowercase().contains("ulysses");
+            let effective_duration = if is_unbreakable {
+                Some(duration.unwrap_or(25))
+            } else {
+                duration
+            };
+
             let contract_enum = match contract.to_lowercase().as_str() {
                 "breakable" | "accountable" => CommitmentContract::AccountableBreakable {
                     min_reason_characters: min_reason,
                 },
                 "unbreakable" | "ulysses" => CommitmentContract::Unbreakable {
-                    target_duration_seconds: duration.unwrap_or(25) as u64 * 60,
+                    target_duration_seconds: effective_duration.unwrap_or(25) as u64 * 60,
                 },
                 _ => CommitmentContract::Standard,
             };
@@ -238,7 +246,7 @@ fn main() {
                 WorkflowId::new(format!("wf-{}", workflow.to_lowercase().replace(' ', "-")));
             let mut wf = Workflow::new(wf_id.clone(), workflow.clone());
             wf.commitment_contract = contract_enum;
-            wf.target_duration_minutes = duration;
+            wf.target_duration_minutes = effective_duration;
             wf.default_grace_period_seconds = 30;
 
             // Default allowed applications
@@ -357,7 +365,7 @@ fn main() {
                 &mut wf_service,
                 started_session,
                 &workflow,
-                duration,
+                effective_duration,
                 running,
                 cli.verbose,
             );

@@ -174,8 +174,22 @@ impl WorkflowSession {
                 }
                 self.early_exit_reason = Some(r.to_string());
             }
-            CommitmentContract::Unbreakable { .. } => {
-                return Err(SessionError::CannotBreakUnbreakableWorkflow);
+            CommitmentContract::Unbreakable {
+                target_duration_seconds,
+            } => {
+                let active_elapsed = self.total_focus_seconds
+                    + self.total_grace_seconds
+                    + self.total_distraction_seconds
+                    + self.total_paused_seconds;
+                if active_elapsed >= *target_duration_seconds
+                    || self.duration_seconds(Utc::now()) >= *target_duration_seconds
+                {
+                    self.state = SessionState::Completed;
+                    self.end_time = Some(Utc::now());
+                    return Ok(());
+                } else {
+                    return Err(SessionError::CannotBreakUnbreakableWorkflow);
+                }
             }
         }
 

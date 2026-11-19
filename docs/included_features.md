@@ -77,7 +77,7 @@ This document details all features currently implemented and active in the FlowG
 
 ---
 
-## 10. Local Session History & Analytics Engine
-- Complete, local-only session history stored in `history.json`.
+## 10. Local SQLite Session History & Analytics Engine
+- Complete, local-only session history stored in SQLite (`flowguard.db`).
 - Displays total focus time, sessions completed, average quality scores, and logged pull-backs.
 - Interactive drift event viewer showing exact timestamps, unauthorized window targets, and recovery durations.

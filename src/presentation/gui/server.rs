@@ -185,15 +185,37 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             wf.target_duration_minutes = req_data.duration_minutes;
             wf.default_grace_period_seconds = 30;
 
-            wf.commitment_contract = match req_data.contract_type.to_lowercase().as_str() {
+            let contract_lower = req_data.contract_type.to_lowercase();
+            let duration_mins =
+                if contract_lower.contains("unbreakable") || contract_lower.contains("ulysses") {
+                    Some(req_data.duration_minutes.unwrap_or(25))
+                } else {
+                    req_data.duration_minutes
+                };
+
+            let contract = match contract_lower.as_str() {
                 "unbreakable" | "ulysses" => CommitmentContract::Unbreakable {
-                    target_duration_seconds: req_data.duration_minutes.unwrap_or(25) as u64 * 60,
+                    target_duration_seconds: duration_mins.unwrap_or(25) as u64 * 60,
                 },
                 "breakable" | "accountable" => CommitmentContract::AccountableBreakable {
                     min_reason_characters: req_data.min_reason_characters.unwrap_or(10),
                 },
-                _ => CommitmentContract::Standard,
+                "standard" => CommitmentContract::Standard,
+                other => {
+                    respond_error(
+                        request,
+                        400,
+                        &format!(
+                            "Invalid contract_type '{}'. Allowed: standard, accountable, unbreakable",
+                            other
+                        ),
+                    );
+                    return;
+                }
             };
+
+            wf.target_duration_minutes = duration_mins;
+            wf.commitment_contract = contract;
 
             for (idx, app) in req_data.allowed_apps.into_iter().enumerate() {
                 wf.rules.push(WorkflowRule {
@@ -228,6 +250,23 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
                 respond_error(request, 500, &format!("Failed to save workflow: {}", e));
             } else {
                 respond_json(request, 201, r#"{"status":"created"}"#);
+            }
+        }
+        (&Method::Delete, p) if p.starts_with("/api/workflows/") => {
+            let id = p.trim_start_matches("/api/workflows/");
+            if id.is_empty() {
+                respond_error(request, 400, "Workflow ID required");
+                return;
+            }
+            if ["wf-study", "wf-deep-work", "wf-coding", "wf-reading"].contains(&id) {
+                respond_error(request, 403, "Cannot delete built-in preset workflows");
+                return;
+            }
+            let mut repo = SqliteWorkflowRepository::new(ctx.db.clone());
+            match repo.delete(&WorkflowId::new(id)) {
+                Ok(true) => respond_json(request, 200, r#"{"status":"deleted"}"#),
+                Ok(false) => respond_error(request, 404, "Workflow not found"),
+                Err(e) => respond_error(request, 500, &format!("Failed to delete workflow: {}", e)),
             }
         }
         (&Method::Get, "/api/history") => {

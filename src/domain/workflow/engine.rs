@@ -170,6 +170,65 @@ pub fn is_browser_app(app_name: &str) -> bool {
     )
 }
 
+/// Identifies algorithmic short-form video feeds (YouTube Shorts, Instagram Reels, TikTok)
+/// across browser URLs and native window titles.
+pub fn is_short_form_media(observation: &ActivityObservation) -> bool {
+    let url_lower = observation
+        .browser
+        .as_ref()
+        .and_then(|b| b.url.as_deref())
+        .unwrap_or("")
+        .to_lowercase();
+    let title_lower = observation
+        .window_title
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 1. Explicit URL routes
+    if url_lower.contains("/shorts/")
+        || url_lower.contains("instagram.com/reels/")
+        || url_lower.contains("instagram.com/reel/")
+        || url_lower.contains("tiktok.com")
+    {
+        return true;
+    }
+
+    // 2. Video platform hashtag and title markers
+    let is_media_platform = title_lower.contains("youtube")
+        || title_lower.contains("instagram")
+        || title_lower.contains("tiktok")
+        || url_lower.contains("youtube.com")
+        || url_lower.contains("instagram.com")
+        || url_lower.contains("tiktok.com");
+
+    if is_media_platform {
+        let markers = [
+            "#shorts",
+            "#short",
+            "#ytshorts",
+            "#viralshort",
+            "#viralshorts",
+            "short video",
+            "shorts -",
+            " - shorts",
+            "/shorts",
+            "#reels",
+            "#reel",
+            "/reels",
+            "/reel",
+            "tiktok",
+        ];
+        for m in &markers {
+            if title_lower.contains(m) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Matches an observed application and window title against an allowed/restricted application rule.
 ///
 /// Supports exact executable names (e.g. `code.exe`), names without `.exe` (e.g. `code`),
@@ -314,6 +373,42 @@ impl RuleEngine {
             .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
         let canonical_resource = browser_url.and_then(parse_canonical_resource);
 
+        // 4b. Restrict short-form algorithmic media (Shorts, Reels, TikTok) unless explicitly permitted
+        if is_short_form_media(observation) {
+            let target_name = browser_url.unwrap_or(app_name).to_string();
+            let shorts_rule_id = super::entities::RuleId::new("rule-restrict-shorts");
+            let grace_duration = workflow.default_grace_period_seconds;
+
+            match timer.tick(&shorts_rule_id, &target_name, grace_duration) {
+                TimerStatus::GracePeriod {
+                    remaining_seconds,
+                    total_grace_seconds,
+                } => {
+                    return PolicyDecision::GracePeriod {
+                        rule_id: shorts_rule_id,
+                        remaining_seconds,
+                        total_grace_seconds,
+                        target_name,
+                    };
+                }
+                TimerStatus::Expired { .. } => {
+                    return PolicyDecision::InterventionRequired {
+                        rule_id: shorts_rule_id,
+                        target_name,
+                        reason:
+                            "Short-form algorithmic media (Shorts/Reels) violates focus intention"
+                                .to_string(),
+                    };
+                }
+                TimerStatus::Idle => {
+                    return PolicyDecision::Allowed {
+                        rule_id: shorts_rule_id,
+                        scope: RuleScope::WorkflowDefault,
+                    };
+                }
+            }
+        }
+
         // 5. Evaluate all active rules
         let mut matching_rules: Vec<(&WorkflowRule, u32)> = Vec::new();
 
@@ -343,7 +438,35 @@ impl RuleEngine {
                     }
                 }
                 RuleMatcher::ApplicationName(target_app) => {
-                    app_matches(&app_lower, observation.window_title.as_deref(), target_app)
+                    let is_match =
+                        app_matches(&app_lower, observation.window_title.as_deref(), target_app);
+                    if is_match && is_browser_app(&app_lower) {
+                        // If workflow specifies domain allow rules, an allowed browser container
+                        // must not bypass domain restrictions
+                        let has_domain_rules = workflow.rules.iter().any(|r| {
+                            r.is_active(now) && matches!(r.matcher, RuleMatcher::DomainPattern(_))
+                        });
+                        if has_domain_rules {
+                            let matches_domain = workflow.rules.iter().any(|r| {
+                                if let RuleMatcher::DomainPattern(pat) = &r.matcher {
+                                    if let Some(ref h) = browser_host {
+                                        domain_matches(h, pat)
+                                    } else if let Some(ref t) = observation.window_title {
+                                        title_matches_domain(t, pat)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            });
+                            matches_domain
+                        } else {
+                            true
+                        }
+                    } else {
+                        is_match
+                    }
                 }
                 RuleMatcher::Any => true,
             };
