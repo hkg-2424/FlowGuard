@@ -53,6 +53,7 @@ impl GuiEngine {
     pub fn run(mut self, wf_repo: Box<dyn WorkflowRepository>) {
         info!("GuiEngine focus orchestration loop started.");
 
+        let mut active_poll_counter: u32 = 0;
         let mut idle_poll_counter: u32 = 0;
 
         while self.running.load(Ordering::SeqCst) {
@@ -69,6 +70,7 @@ impl GuiEngine {
                                     st.active_session = Some(sess.clone());
                                     st.last_pull_back = None;
                                 }
+                                active_poll_counter = 10; // Trigger evaluation immediately
                                 let _ = reply.send(Ok(sess));
                             }
                             Err(e) => {
@@ -98,6 +100,7 @@ impl GuiEngine {
                                     s.state = SessionState::Active;
                                 }
                             }
+                            active_poll_counter = 10;
                             let _ = reply.send(Ok(()));
                         }
                         Err(e) => {
@@ -113,6 +116,7 @@ impl GuiEngine {
                                     st.active_workflow = None;
                                     st.last_decision = None;
                                 }
+                                active_poll_counter = 0;
                                 let _ = reply.send(Ok(sess));
                             }
                             Err(e) => {
@@ -123,34 +127,68 @@ impl GuiEngine {
                 }
             }
 
-            // 2. Perform live tick evaluation if session is active
+            // 2. Perform live tick evaluation if session is active (at 1-second intervals)
             if self.service.active_session().is_some() {
-                match self.service.evaluate_tick() {
-                    Ok(eval) => {
-                        let mut st = self.state.lock().unwrap();
-                        st.last_observation = Some(eval.observation);
-                        st.last_decision = Some(eval.decision);
-                        st.active_session = Some(eval.session);
-                        st.source_connected = true;
+                active_poll_counter += 1;
+                if active_poll_counter >= 10 {
+                    active_poll_counter = 0;
+                    match self.service.evaluate_tick() {
+                        Ok(eval) => {
+                            // Check if target duration reached for natural auto-completion
+                            let elapsed = eval.session.duration_seconds(chrono::Utc::now());
+                            let target_secs = self
+                                .service
+                                .active_workflow()
+                                .and_then(|w| w.target_duration_minutes)
+                                .map(|m| m as u64 * 60);
 
-                        if let Some(pb) = eval.pull_back_event {
-                            st.last_pull_back = Some(PullBackNotification {
-                                target: pb.target_name,
-                                recovery_seconds: pb.duration_seconds,
-                                timestamp: pb.timestamp,
-                            });
+                            if let Some(target) = target_secs {
+                                if elapsed >= target {
+                                    info!(
+                                        "Target focus duration of {}s reached! Completing session naturally.",
+                                        target
+                                    );
+                                    if let Ok(completed_sess) = self.service.complete_session() {
+                                        let mut st = self.state.lock().unwrap();
+                                        st.last_observation = Some(eval.observation);
+                                        st.active_session = None;
+                                        st.active_workflow = None;
+                                        st.last_decision = Some(crate::domain::workflow::PolicyDecision::Allowed {
+                                            rule_id: crate::domain::workflow::RuleId::new("completed"),
+                                            scope: crate::domain::workflow::RuleScope::WorkflowDefault,
+                                        });
+                                        let _ = completed_sess;
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let mut st = self.state.lock().unwrap();
+                            st.last_observation = Some(eval.observation);
+                            st.last_decision = Some(eval.decision);
+                            st.active_session = Some(eval.session);
+                            st.source_connected = true;
+
+                            if let Some(pb) = eval.pull_back_event {
+                                st.last_pull_back = Some(PullBackNotification {
+                                    target: pb.target_name,
+                                    recovery_seconds: pb.duration_seconds,
+                                    timestamp: pb.timestamp,
+                                });
+                            }
                         }
-                    }
-                    Err(WorkflowServiceError::Source(err)) => {
-                        warn!("Source poll error in GUI session: {}", err);
-                        let mut st = self.state.lock().unwrap();
-                        st.source_connected = false;
-                    }
-                    Err(e) => {
-                        error!("Evaluation error in GUI session: {}", e);
+                        Err(WorkflowServiceError::Source(err)) => {
+                            warn!("Source poll error in GUI session: {}", err);
+                            let mut st = self.state.lock().unwrap();
+                            st.source_connected = false;
+                        }
+                        Err(e) => {
+                            error!("Evaluation error in GUI session: {}", e);
+                        }
                     }
                 }
             } else {
+                active_poll_counter = 0;
                 // Inactive session: periodically poll observation every ~1s (10 ticks x 100ms)
                 idle_poll_counter += 1;
                 if idle_poll_counter >= 10 {

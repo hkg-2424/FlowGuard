@@ -136,7 +136,33 @@ impl GuiState {
     pub fn snapshot(&self) -> LiveSessionSnapshot {
         let (current_app, current_title, current_domain, idle_str) = match &self.last_observation {
             Some(obs) => {
-                let domain = obs.browser.as_ref().and_then(|b| b.url.clone());
+                let domain = obs
+                    .browser
+                    .as_ref()
+                    .and_then(|b| b.url.as_deref())
+                    .and_then(|u| url::Url::parse(u).ok())
+                    .and_then(|u| u.host_str().map(|h| h.to_string()))
+                    .or_else(|| {
+                        // If no browser url, check if title has a domain
+                        obs.window_title.as_deref().and_then(|t| {
+                            let t_lower = t.to_lowercase();
+                            if t_lower.contains("github") {
+                                Some("github.com".to_string())
+                            } else if t_lower.contains("wikipedia") {
+                                Some("wikipedia.org".to_string())
+                            } else if t_lower.contains("rust") {
+                                Some("doc.rust-lang.org".to_string())
+                            } else if t_lower.contains("leetcode") {
+                                Some("leetcode.com".to_string())
+                            } else if t_lower.contains("youtube") {
+                                Some("youtube.com".to_string())
+                            } else if t_lower.contains("reddit") {
+                                Some("reddit.com".to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    });
                 (
                     obs.application.clone(),
                     obs.window_title.clone(),

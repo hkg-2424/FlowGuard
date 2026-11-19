@@ -60,19 +60,19 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
     let path = url.split('?').next().unwrap_or("/");
 
     match (&method, path) {
-        (&Method::Get, "/" | "/index.html") => {
+        (&Method::Get | &Method::Head, "/" | "/index.html") => {
             let resp = Response::from_string(INDEX_HTML).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             );
             let _ = request.respond(resp);
         }
-        (&Method::Get, "/style.css") => {
+        (&Method::Get | &Method::Head, "/style.css") => {
             let resp = Response::from_string(STYLE_CSS).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=utf-8"[..]).unwrap(),
             );
             let _ = request.respond(resp);
         }
-        (&Method::Get, "/app.js") => {
+        (&Method::Get | &Method::Head, "/app.js") => {
             let resp = Response::from_string(APP_JS).with_header(
                 Header::from_bytes(
                     &b"Content-Type"[..],

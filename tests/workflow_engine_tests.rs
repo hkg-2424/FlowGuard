@@ -462,3 +462,80 @@ fn test_wf08_session_lifecycle_and_commitment_contracts() {
     unbreakable_session.complete().unwrap();
     assert_eq!(unbreakable_session.state, SessionState::Completed);
 }
+
+#[test]
+fn test_wf09_native_window_title_domain_fallback() {
+    let wf_id = WorkflowId::new("wf-native-domain");
+    let mut workflow = Workflow::new(wf_id.clone(), "Native Windows Domain Matching");
+
+    // Workflow allows "github.com" and "wikipedia.org", but defaults to Restrict
+    workflow = workflow
+        .with_rule(WorkflowRule {
+            id: RuleId::new("rule-github"),
+            workflow_id: wf_id.clone(),
+            description: "Allow GitHub".into(),
+            scope: RuleScope::Domain,
+            matcher: RuleMatcher::DomainPattern("github.com".into()),
+            effect: RuleEffect::Allow,
+            priority_weight: 10,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        })
+        .with_rule(WorkflowRule {
+            id: RuleId::new("rule-wiki"),
+            workflow_id: wf_id.clone(),
+            description: "Allow Wikipedia".into(),
+            scope: RuleScope::Domain,
+            matcher: RuleMatcher::DomainPattern("wikipedia.org".into()),
+            effect: RuleEffect::Allow,
+            priority_weight: 10,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        });
+
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+
+    // 1. Native Windows observation: browser is None, but title has "GitHub"
+    let obs_github = sample_observation("chrome.exe", "FlowGuardAG - GitHub - Google Chrome", None);
+    let decision1 = engine.evaluate(&obs_github, &workflow, &mut timer, now);
+    assert!(
+        decision1.is_allowed(),
+        "Native Windows observation with 'GitHub' in title must match DomainPattern('github.com')"
+    );
+
+    // 2. Native Windows observation: browser is None, but title has "Wikipedia"
+    let obs_wiki = sample_observation(
+        "msedge.exe",
+        "Rust (programming language) - Wikipedia - Microsoft Edge",
+        None,
+    );
+    let decision2 = engine.evaluate(&obs_wiki, &workflow, &mut timer, now);
+    assert!(
+        decision2.is_allowed(),
+        "Native Windows observation with 'Wikipedia' in title must match DomainPattern('wikipedia.org')"
+    );
+
+    // 3. Native Windows observation: browser is None, title has "YouTube" (unauthorized domain)
+    let obs_yt = sample_observation(
+        "chrome.exe",
+        "Never Gonna Give You Up - YouTube - Google Chrome",
+        None,
+    );
+    let decision3 = engine.evaluate(&obs_yt, &workflow, &mut timer, now);
+    assert!(
+        decision3.is_violation(),
+        "Native Windows observation on YouTube must not match GitHub or Wikipedia rules"
+    );
+
+    // 4. Native Windows observation: browser is None, title has "Reddit" (unauthorized domain)
+    let obs_reddit = sample_observation("chrome.exe", "r/rust - Reddit - Google Chrome", None);
+    let decision4 = engine.evaluate(&obs_reddit, &workflow, &mut timer, now);
+    assert!(
+        decision4.is_violation(),
+        "Native Windows observation on Reddit must not match GitHub or Wikipedia rules"
+    );
+}

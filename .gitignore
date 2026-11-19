@@ -2,6 +2,7 @@
 **/*.rs.bk
 Cargo.lock
 *.exe
+*.exe.old
 
 # ==========================================
 # Rust build artifacts

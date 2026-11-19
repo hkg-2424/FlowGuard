@@ -129,21 +129,39 @@ pub fn launch_desktop_gui(
     Ok(())
 }
 
-/// Opens the Desktop GUI in a dedicated borderless application window using Edge's
-/// native WebView app mode, seamlessly falling back to the system default browser.
+/// Opens the Desktop GUI in a dedicated borderless application window using Edge or Chrome's
+/// native app mode, seamlessly falling back to the system default browser.
 fn launch_desktop_window(url: &str) {
-    let edge_candidates = [
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    let mut candidates = vec![
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe".to_string(),
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe".to_string(),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe".to_string(),
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe".to_string(),
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe".to_string(),
     ];
 
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        candidates.push(format!(
+            r"{}\Microsoft\Edge\Application\msedge.exe",
+            local_app_data
+        ));
+        candidates.push(format!(
+            r"{}\Google\Chrome\Application\chrome.exe",
+            local_app_data
+        ));
+        candidates.push(format!(
+            r"{}\BraveSoftware\Brave-Browser\Application\brave.exe",
+            local_app_data
+        ));
+    }
+
     let mut launched = false;
-    for edge_path in &edge_candidates {
-        if Path::new(edge_path).exists() {
+    for exe_path in &candidates {
+        if Path::new(exe_path).exists() {
             let app_arg = format!("--app={}", url);
             let size_arg = "--window-size=1200,840";
-            if let Ok(_child) = Command::new(edge_path).args([&app_arg, size_arg]).spawn() {
-                info!("Launched dedicated Desktop Webview window via Microsoft Edge");
+            if let Ok(_child) = Command::new(exe_path).args([&app_arg, size_arg]).spawn() {
+                info!("Launched dedicated Desktop Webview window via {}", exe_path);
                 launched = true;
                 break;
             }

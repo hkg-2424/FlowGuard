@@ -338,6 +338,16 @@ impl WorkflowService {
         self.active_session.as_ref()
     }
 
+    /// Returns a reference to the active workflow, if one is active.
+    pub fn active_workflow(&self) -> Option<&Workflow> {
+        self.active_workflow.as_ref()
+    }
+
+    /// Returns the configured poll interval duration.
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
     /// Polls an activity observation directly from the underlying source when no session is active.
     pub fn poll_idle_observation(&mut self) -> Result<ActivityObservation, SourceError> {
         self.source.poll()

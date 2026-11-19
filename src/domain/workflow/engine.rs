@@ -125,6 +125,34 @@ pub fn domain_matches(host: &str, pattern: &str) -> bool {
     }
 }
 
+/// Matches a window title against a domain pattern when browser URL tracking is unavailable
+/// (e.g. native Windows observer without browser extensions).
+pub fn title_matches_domain(title: &str, pattern: &str) -> bool {
+    let title_lower = title.to_lowercase();
+    let pattern_lower = pattern.to_lowercase();
+    let sld = pattern_lower.strip_prefix("*.").unwrap_or(&pattern_lower);
+
+    // 1. Direct substring match (e.g. title contains "docs.rs" or "github.com")
+    if title_lower.contains(sld) {
+        return true;
+    }
+
+    // 2. Main domain token match (e.g. "github.com" -> "github", "wikipedia.org" -> "wikipedia")
+    let parts: Vec<&str> = sld.split('.').collect();
+    if parts.len() >= 2 {
+        let main_token = parts[parts.len() - 2];
+        if main_token.len() >= 3 {
+            // Check direct token in title or title without whitespace (e.g. "Stack Overflow" for "stackoverflow")
+            if title_lower.contains(main_token) || title_lower.replace(' ', "").contains(main_token)
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Pure domain evaluation engine.
 ///
 /// Evaluates incoming [`ActivityObservation`] records against the active [`Workflow`]
@@ -212,10 +240,15 @@ impl RuleEngine {
                 RuleMatcher::ExactUrl(target_url) => {
                     browser_url.map(|u| u == target_url).unwrap_or(false)
                 }
-                RuleMatcher::DomainPattern(pattern) => browser_host
-                    .as_ref()
-                    .map(|h| domain_matches(h, pattern))
-                    .unwrap_or(false),
+                RuleMatcher::DomainPattern(pattern) => {
+                    if let Some(ref h) = browser_host {
+                        domain_matches(h, pattern)
+                    } else if let Some(ref title) = observation.window_title {
+                        title_matches_domain(title, pattern)
+                    } else {
+                        false
+                    }
+                }
                 RuleMatcher::ApplicationName(target_app) => app_lower == target_app.to_lowercase(),
                 RuleMatcher::Any => true,
             };
