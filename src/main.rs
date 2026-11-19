@@ -11,7 +11,7 @@ use flowguard::domain::workflow::{
     CommitmentContract, RuleEffect, RuleId, RuleMatcher, RuleScope, Workflow, WorkflowId,
     WorkflowRule,
 };
-use flowguard::infrastructure::activitywatch::ActivityWatchAdapter;
+use flowguard::infrastructure::create_activity_source;
 use flowguard::infrastructure::persistence::{
     InMemorySessionRepository, InMemoryWorkflowRepository, SqliteDb, SqliteSessionRepository,
     SqliteWorkflowRepository,
@@ -40,12 +40,24 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Optional subcommand to execute. If omitted, launches the novice-friendly Desktop GUI.
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Launch the beginner-friendly Desktop GUI in a dedicated window.
+    Gui {
+        /// Custom port for the local GUI server (default: 3124).
+        #[arg(short, long)]
+        port: Option<u16>,
+
+        /// Run without automatically launching the desktop window/browser.
+        #[arg(long)]
+        no_window: bool,
+    },
+
     /// Run diagnostic checks on the ActivityWatch connection, buckets, and watcher freshness.
     Doctor,
 
@@ -128,28 +140,45 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Doctor => {
-            let adapter = ActivityWatchAdapter::new(config.activity_source.activitywatch.clone());
-            let mut service = ActivityService::new(Box::new(adapter), config.clone());
+        None | Some(Commands::Gui { .. }) => {
+            let (port, no_window) = match cli.command {
+                Some(Commands::Gui { port, no_window }) => (port, no_window),
+                _ => (None, false),
+            };
+            if let Err(e) =
+                flowguard::presentation::gui::launch_desktop_gui(&config, port, no_window)
+            {
+                eprintln!("Error running Desktop GUI: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Doctor) => {
+            let source = create_activity_source(&config);
+            let mut service = ActivityService::new(source, config.clone());
             let report = service.run_doctor();
             print_doctor_report(&report, cli.verbose);
             if !report.is_reachable {
                 std::process::exit(1);
             }
         }
-        Commands::Status => {
-            let adapter = ActivityWatchAdapter::new(config.activity_source.activitywatch.clone());
-            let mut service = ActivityService::new(Box::new(adapter), config.clone());
+        Some(Commands::Status) => {
+            let source = create_activity_source(&config);
+            let mut service = ActivityService::new(source, config.clone());
             let (health, caps) = service.status();
-            print_status(
-                health,
-                &caps,
-                &config.activity_source.activitywatch.base_url,
-            );
+            let endpoint_desc =
+                if config.activity_source.provider.to_lowercase() == "native_windows" {
+                    "Win32 Subsystem".to_string()
+                } else {
+                    format!(
+                        "{} (with Native Windows fallback)",
+                        config.activity_source.activitywatch.base_url
+                    )
+                };
+            print_status(health, &caps, &endpoint_desc);
         }
-        Commands::Observe { once } => {
-            let adapter = ActivityWatchAdapter::new(config.activity_source.activitywatch.clone());
-            let mut service = ActivityService::new(Box::new(adapter), config.clone());
+        Some(Commands::Observe { once }) => {
+            let source = create_activity_source(&config);
+            let mut service = ActivityService::new(source, config.clone());
             if once {
                 match service.observe_once() {
                     Ok(obs) => {
@@ -185,14 +214,14 @@ fn main() {
                 println!("\nFlowGuard observation stopped.");
             }
         }
-        Commands::Session {
+        Some(Commands::Session {
             workflow,
             duration,
             contract,
             min_reason,
             allow_apps,
             allow_domains,
-        } => {
+        }) => {
             use flowguard::application::ports::{SessionRepository, WorkflowRepository};
 
             let contract_enum = match contract.to_lowercase().as_str() {
@@ -300,9 +329,9 @@ fn main() {
                 std::process::exit(1);
             }
 
-            let adapter = ActivityWatchAdapter::new(config.activity_source.activitywatch.clone());
+            let source = create_activity_source(&config);
             let mut wf_service = WorkflowService::new(
-                Box::new(adapter),
+                source,
                 wf_repo,
                 session_repo,
                 config.activity_source.activitywatch.poll_interval_ms,
@@ -345,7 +374,7 @@ fn main() {
                 }
             }
         }
-        Commands::History { limit } => {
+        Some(Commands::History { limit }) => {
             use flowguard::application::ports::SessionRepository;
 
             let db_path = default_database_path();

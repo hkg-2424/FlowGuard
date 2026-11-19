@@ -22,6 +22,8 @@ unicode-segmentation = "1.13.3"
 unicode-width = "0.2.3"
 url = "2.5"
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+tiny_http = "0.12"
+open = "5.4"
 
 [dev-dependencies]
 wiremock = "0.6"

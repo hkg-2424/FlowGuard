@@ -39,6 +39,14 @@ impl ActivityService {
         Self { source, config }
     }
 
+    /// Creates an `ActivityService` using automatic source selection:
+    /// attempts ActivityWatch first and seamlessly falls back to Native Windows
+    /// observer if ActivityWatch is unreachable or uninstalled.
+    pub fn new_auto(config: FlowGuardConfig) -> Self {
+        let source = crate::infrastructure::create_activity_source(&config);
+        Self::new(source, config)
+    }
+
     /// Performs deep diagnostics on the activity source and returns a structured report.
     ///
     /// Delegates directly to the underlying `ActivitySource` implementation, preserving
@@ -48,13 +56,24 @@ impl ActivityService {
         match self.source.diagnose() {
             Ok(report) => report,
             Err(e) => {
-                let endpoint = self.config.activity_source.activitywatch.base_url.clone();
+                let is_native =
+                    self.config.activity_source.provider.to_lowercase() == "native_windows";
+                let provider = if is_native {
+                    "NativeWindows"
+                } else {
+                    "ActivityWatch"
+                };
+                let endpoint = if is_native {
+                    "Win32 Subsystem".to_string()
+                } else {
+                    self.config.activity_source.activitywatch.base_url.clone()
+                };
                 let health = match &e {
                     SourceError::WrongService { .. } => SourceHealth::WrongService,
                     _ => SourceHealth::Disconnected,
                 };
                 DiagnosticReport::unreachable(
-                    "ActivityWatch",
+                    provider,
                     endpoint,
                     health,
                     format!("Diagnostic failure: {}", e),

@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowGuard — Focus &amp; Productivity Assistant</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">FlowGuard</span>
+          <span class="brand-tag">Focus Assistant</span>
+        </div>
+      </div>
+
+      <nav class="nav-tabs">
+        <button class="nav-tab active" id="tab-focus" onclick="switchView('focus')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+          </svg>
+          Focus Hub
+        </button>
+        <button class="nav-tab" id="tab-history" onclick="switchView('history')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/>
+            <path d="M12 7v5l4 2"/>
+          </svg>
+          History &amp; Analytics
+        </button>
+      </nav>
+    </div>
+
+    <div class="header-right">
+      <!-- Live Monitoring Status Indicator -->
+      <div class="status-indicator" id="status-card" title="Native Windows background observer tracks active foreground apps. AFK freezes timers so no focus or grace time is wasted.">
+        <span class="status-dot connected" id="status-dot"></span>
+        <div class="status-meta">
+          <span class="status-source" id="source-name">Native Windows (Win32)</span>
+          <span class="status-idle" id="idle-badge">Active</span>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary btn-sm" onclick="startTour(true)" title="Step-by-step introduction to FlowGuard">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        Tour / Guide
+      </button>
+
+      <button class="btn btn-primary btn-sm" onclick="openCreateWorkflowModal()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        New Workflow
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="main-container">
+    <!-- VIEW 1: FOCUS HUB -->
+    <section id="view-focus" class="view-section active">
+      <!-- Inactive / Idle State: Workflow Selector & Presets -->
+      <div id="selector-panel" class="panel">
+        <div class="hero-greeting">
+          <h1>Ready to achieve deep flow?</h1>
+          <p>Select a pre-configured workflow below or create a custom one with your preferred apps and websites.</p>
+        </div>
+
+        <div class="workflows-grid" id="workflows-container">
+          <!-- Populated by JavaScript with Study, Deep Work, Coding, Reading presets -->
+        </div>
+      </div>
+
+      <!-- Active State: Live Focus Session Dashboard -->
+      <div id="session-dashboard" class="panel hidden">
+        <!-- Live Alert Banner (for Grace Period & Distractions & Celebrations) -->
+        <div id="alert-banner" class="alert-banner hidden">
+          <div class="alert-icon" id="alert-icon">⚠️</div>
+          <div class="alert-content">
+            <h4 id="alert-title">Distraction Detected!</h4>
+            <p id="alert-message">Return to your allowed workflow before the grace period ends to preserve your focus score.</p>
+          </div>
+          <div class="alert-countdown" id="alert-countdown">30s</div>
+        </div>
+
+        <!-- Pull-Back Celebration Banner -->
+        <div id="pullback-banner" class="pullback-banner hidden">
+          <div class="pullback-icon">🎉</div>
+          <div class="pullback-text">
+            <strong>Self-Correction Recorded!</strong>
+            <span id="pullback-desc">You returned to flow within 6s. Focus Quality Score preserved!</span>
+          </div>
+        </div>
+
+        <!-- Dashboard Grid Layout -->
+        <div class="dashboard-grid">
+          <!-- Main Left Column: Timer & Grace Animation -->
+          <div class="card dashboard-timer-card">
+            <div class="session-card-header">
+              <div class="session-badge" id="session-wf-name">Deep Work</div>
+              <div class="contract-badge" id="session-contract-badge">Accountable</div>
+            </div>
+
+            <!-- Radial Progress Ring & Countdown -->
+            <div class="timer-centerpiece">
+              <div class="radial-ring-container">
+                <svg class="radial-svg" width="260" height="260" viewBox="0 0 260 260">
+                  <circle class="ring-bg" cx="130" cy="130" r="110"/>
+                  <circle class="ring-progress" id="grace-ring" cx="130" cy="130" r="110"/>
+                </svg>
+                <div class="timer-display">
+                  <div class="timer-digits" id="timer-digits">25:00</div>
+                  <div class="timer-label" id="timer-label">Remaining Time</div>
+                  <div class="grace-label hidden" id="grace-label">
+                    <span class="grace-pulse"></span> Grace Window: <strong id="grace-seconds-text">30s</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Session Controls -->
+            <div class="session-controls">
+              <button class="btn btn-secondary btn-lg" id="btn-pause-resume" onclick="togglePauseResume()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+                </svg>
+                <span id="btn-pause-text">Pause</span>
+              </button>
+              <button class="btn btn-danger btn-lg" id="btn-end-session" onclick="handleEndSessionClick()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                </svg>
+                End Session
+              </button>
+            </div>
+          </div>
+
+          <!-- Right Column: Live Context & Live Metrics -->
+          <div class="dashboard-side-column">
+            <!-- Active Foreground App Context -->
+            <div class="card live-context-card">
+              <h3 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                Live Foreground Activity
+              </h3>
+
+              <div class="active-app-box">
+                <div class="app-avatar" id="app-avatar">💻</div>
+                <div class="app-details">
+                  <div class="app-name-row">
+                    <span class="app-exe" id="live-app-name">code.exe</span>
+                    <span class="policy-chip chip-allowed" id="policy-chip">Allowed Context</span>
+                  </div>
+                  <div class="window-title" id="live-window-title">FlowGuard - Visual Studio Code</div>
+                  <div class="domain-title" id="live-domain-title">github.com</div>
+                </div>
+              </div>
+
+              <div class="live-prompt-box" id="live-prompt-box">
+                <p id="live-prompt-text">Great job! You are currently working inside an authorized application.</p>
+              </div>
+            </div>
+
+            <!-- Live Session Metrics -->
+            <div class="card session-metrics-card">
+              <h3 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>
+                </svg>
+                Live Session Stats
+              </h3>
+
+              <div class="metrics-grid">
+                <div class="metric-box">
+                  <div class="metric-label">Focus Time</div>
+                  <div class="metric-value focus-value" id="stat-focus-time">0m 00s</div>
+                </div>
+
+                <div class="metric-box">
+                  <div class="metric-label">Quality Score</div>
+                  <div class="metric-value score-value" id="stat-quality-score">100%</div>
+                </div>
+
+                <div class="metric-box">
+                  <div class="metric-label">Pull-Backs</div>
+                  <div class="metric-value pullback-value" id="stat-pullbacks">0</div>
+                  <div class="metric-hint">Self-corrections</div>
+                </div>
+
+                <div class="metric-box">
+                  <div class="metric-label">Grace / Distraction</div>
+                  <div class="metric-value grace-value" id="stat-grace-distraction">0s / 0s</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: HISTORY & ANALYTICS -->
+    <section id="view-history" class="view-section hidden">
+      <div class="history-hero">
+        <h2>Focus History &amp; Analytics</h2>
+        <p>Review past sessions, quality scores, and logged self-correction pull-backs.</p>
+      </div>
+
+      <!-- Aggregate Analytics Overview -->
+      <div class="analytics-overview-grid">
+        <div class="card stat-card">
+          <div class="stat-icon-wrap bg-green">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </div>
+          <div class="stat-body">
+            <div class="stat-title">Total Focus Time</div>
+            <div class="stat-number" id="hist-total-focus">0h 0m</div>
+          </div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-icon-wrap bg-blue">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+          </div>
+          <div class="stat-body">
+            <div class="stat-title">Sessions Completed</div>
+            <div class="stat-number" id="hist-total-sessions">0</div>
+          </div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-icon-wrap bg-purple">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+          </div>
+          <div class="stat-body">
+            <div class="stat-title">Average Quality Score</div>
+            <div class="stat-number" id="hist-avg-score">100%</div>
+          </div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-icon-wrap bg-amber">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </div>
+          <div class="stat-body">
+            <div class="stat-title">Total Pull-Backs</div>
+            <div class="stat-number" id="hist-total-pullbacks">0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Sessions Table -->
+      <div class="card history-table-card">
+        <h3 class="card-title">Recent Focus Sessions</h3>
+        <div class="table-container">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Date &amp; Time</th>
+                <th>Workflow</th>
+                <th>Outcome</th>
+                <th>Focus Duration</th>
+                <th>Quality Score</th>
+                <th>Pull-Backs</th>
+                <th>Notes / Reflection</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="history-table-body">
+              <tr>
+                <td colspan="8" class="text-center text-muted py-8">Loading session history...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL 1: INTERACTIVE ONBOARDING TOUR -->
+  <div class="modal-backdrop hidden" id="modal-tour">
+    <div class="modal-card tour-modal">
+      <button class="modal-close-btn" onclick="closeTour()">&times;</button>
+      
+      <div class="tour-slide" id="tour-slide-1">
+        <div class="tour-illustration">🛡️</div>
+        <h2>Welcome to FlowGuard</h2>
+        <p class="tour-text">
+          FlowGuard is a <strong>local-first Windows focus assistant</strong> engineered to help you achieve and sustain deep flow without shame, invasive blocking, or cloud telemetry.
+        </p>
+        <div class="tour-feature-box">
+          <div class="feature-bullet"><strong>100% Local &amp; Private:</strong> All activity monitoring runs entirely on your PC using native Windows Win32 APIs.</div>
+          <div class="feature-bullet"><strong>Zero Configuration:</strong> No complex background servers or browser setup required. It just works.</div>
+        </div>
+      </div>
+
+      <div class="tour-slide hidden" id="tour-slide-2">
+        <div class="tour-illustration">🎯</div>
+        <h2>One-Click Workflows</h2>
+        <p class="tour-text">
+          Focus is contextual. FlowGuard organizes your day into <strong>Workflows</strong> (like <em>Study</em>, <em>Deep Work</em>, <em>Coding</em>, or <em>Reading</em>) that define authorized applications and websites.
+        </p>
+        <div class="tour-feature-box">
+          <div class="feature-bullet"><strong>Pre-Configured Presets:</strong> Launch Study, Coding, or Deep Work with 1 click.</div>
+          <div class="feature-bullet"><strong>Customizable:</strong> Easily create your own workflows with specific apps and domain rules.</div>
+        </div>
+      </div>
+
+      <div class="tour-slide hidden" id="tour-slide-3">
+        <div class="tour-illustration">⏳</div>
+        <h2>The 30-Second Grace Window</h2>
+        <p class="tour-text">
+          Human attention naturally drifts. FlowGuard embraces this reality through the <strong>30-second Grace Window</strong> instead of harsh, sudden punishment.
+        </p>
+        <div class="tour-feature-box">
+          <div class="feature-bullet"><strong>Gentle Runway:</strong> When you open a distracting app or website, FlowGuard starts an animated 30-second grace timer.</div>
+          <div class="feature-bullet"><strong>No Panic:</strong> You have 30 full seconds to recognize the distraction and return to your workflow.</div>
+        </div>
+      </div>
+
+      <div class="tour-slide hidden" id="tour-slide-4">
+        <div class="tour-illustration">🔄</div>
+        <h2>Pull-Back Resilience &amp; Quality Score</h2>
+        <p class="tour-text">
+          Focus isn’t the absence of distraction—it’s the speed of recovery. FlowGuard actively rewards <strong>Pull-Backs</strong>!
+        </p>
+        <div class="tour-feature-box">
+          <div class="feature-bullet"><strong>Self-Correction Celebrations:</strong> Returning to your allowed workflow before the 30s timer expires logs a "Pull-Back" self-correction.</div>
+          <div class="feature-bullet"><strong>Protected Quality Score:</strong> Self-correcting preserves your 100% Focus Quality Score!</div>
+        </div>
+      </div>
+
+      <div class="tour-slide hidden" id="tour-slide-5">
+        <div class="tour-illustration">🤝</div>
+        <h2>Commitment Contracts</h2>
+        <p class="tour-text">
+          Set the level of accountability that fits your mood and willpower:
+        </p>
+        <div class="tour-feature-box">
+          <div class="feature-bullet"><strong>Standard:</strong> Free, low-friction focus. End session anytime.</div>
+          <div class="feature-bullet"><strong>Accountable Breakable:</strong> Requires typing a thoughtful reflection reason before quitting early.</div>
+          <div class="feature-bullet"><strong>Unbreakable (Ulysses):</strong> Locked in until your target timer ends. For your most critical deep work blocks.</div>
+        </div>
+      </div>
+
+      <!-- Tour Navigation Footer -->
+      <div class="tour-footer">
+        <div class="tour-dots">
+          <span class="tour-dot active" onclick="goToTourStep(1)"></span>
+          <span class="tour-dot" onclick="goToTourStep(2)"></span>
+          <span class="tour-dot" onclick="goToTourStep(3)"></span>
+          <span class="tour-dot" onclick="goToTourStep(4)"></span>
+          <span class="tour-dot" onclick="goToTourStep(5)"></span>
+        </div>
+        <div class="tour-actions">
+          <button class="btn btn-secondary btn-sm" id="tour-prev-btn" onclick="prevTourStep()" disabled>Back</button>
+          <button class="btn btn-primary btn-sm" id="tour-next-btn" onclick="nextTourStep()">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: ACCOUNTABLE EXIT REFLECTION -->
+  <div class="modal-backdrop hidden" id="modal-accountable-exit">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="modal-badge badge-warning">Accountable Commitment Active</span>
+          <h3>Early Exit Reflection</h3>
+        </div>
+        <button class="modal-close-btn" onclick="closeAccountableModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-secondary">
+          You committed to an <strong>Accountable Focus Session</strong>. Pausing to write down why you are stopping encourages intentionality and combats impulsive task-switching.
+        </p>
+        <div class="form-group mt-4">
+          <label for="exit-reason-input">Why are you ending this focus session early?</label>
+          <textarea id="exit-reason-input" class="form-control" rows="3" placeholder="e.g. Urgent call from team lead regarding release; shifting focus to incident." oninput="updateReasonCharCount()"></textarea>
+          <div class="char-counter">
+            <span id="reason-char-count">0</span> / <span id="reason-min-count">10</span> characters required
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeAccountableModal()">Cancel &amp; Stay Focused</button>
+        <button class="btn btn-danger" id="btn-submit-early-exit" onclick="submitEarlyExit()" disabled>End Session</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: ULYSSES / UNBREAKABLE WARNING -->
+  <div class="modal-backdrop hidden" id="modal-unbreakable-warning">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <span class="modal-badge badge-danger">Unbreakable Commitment Active</span>
+          <h3>Ulysses Lock Enforced</h3>
+        </div>
+        <button class="modal-close-btn" onclick="closeUnbreakableModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="unbreakable-dialog-icon">🔒</div>
+        <p class="text-secondary text-center mt-2">
+          You started an <strong>Unbreakable (Ulysses) Focus Session</strong>. Early cancellation is strictly prohibited until the target session duration has elapsed.
+        </p>
+        <p class="text-secondary text-center mt-2">
+          Close distracting windows and return to your authorized tools to maintain your focus streak!
+        </p>
+      </div>
+      <div class="modal-footer justify-center">
+        <button class="btn btn-primary" onclick="closeUnbreakableModal()">Return to Work</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: CREATE WORKFLOW -->
+  <div class="modal-backdrop hidden" id="modal-create-workflow">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Create Custom Workflow</h3>
+        <button class="modal-close-btn" onclick="closeCreateWorkflowModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="new-wf-name">Workflow Name</label>
+          <input type="text" id="new-wf-name" class="form-control" placeholder="e.g. Writing, Language Practice, CAD Design">
+        </div>
+
+        <div class="form-row mt-3">
+          <div class="form-group flex-1">
+            <label for="new-wf-duration">Target Duration (Minutes)</label>
+            <input type="number" id="new-wf-duration" class="form-control" value="25" min="5" max="240">
+          </div>
+
+          <div class="form-group flex-1">
+            <label for="new-wf-contract">Commitment Level</label>
+            <select id="new-wf-contract" class="form-control">
+              <option value="standard">Standard (Flexible)</option>
+              <option value="breakable" selected>Accountable Breakable (Reflection on Exit)</option>
+              <option value="unbreakable">Unbreakable (Ulysses Lock)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group mt-3">
+          <label for="new-wf-apps">Allowed Applications (comma-separated)</label>
+          <input type="text" id="new-wf-apps" class="form-control" placeholder="e.g. code.exe, obsidian.exe, notepad.exe">
+          <span class="form-hint">Tip: Use the executable name (e.g. code.exe, acrobat.exe, devenv.exe).</span>
+        </div>
+
+        <div class="form-group mt-3">
+          <label for="new-wf-domains">Allowed Web Domains (comma-separated)</label>
+          <input type="text" id="new-wf-domains" class="form-control" placeholder="e.g. github.com, docs.rs, stackoverflow.com">
+          <span class="form-hint">Tip: Enter domain without https:// (e.g. wikipedia.org).</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeCreateWorkflowModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitCreateWorkflow()">Create Workflow</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 5: DRIFT EVENTS VIEWER -->
+  <div class="modal-backdrop hidden" id="modal-drift-events">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Session Distraction &amp; Pull-Back Events</h3>
+        <button class="modal-close-btn" onclick="closeDriftModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="drift-events-container">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeDriftModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

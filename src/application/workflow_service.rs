@@ -337,4 +337,9 @@ impl WorkflowService {
     pub fn active_session(&self) -> Option<&WorkflowSession> {
         self.active_session.as_ref()
     }
+
+    /// Polls an activity observation directly from the underlying source when no session is active.
+    pub fn poll_idle_observation(&mut self) -> Result<ActivityObservation, SourceError> {
+        self.source.poll()
+    }
 }
