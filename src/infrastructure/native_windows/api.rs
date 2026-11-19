@@ -41,6 +41,10 @@ mod win32 {
         pub fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> BOOL;
         pub fn EnumWindows(lpEnumFunc: WNDENUMPROC, lParam: LPARAM) -> BOOL;
         pub fn IsWindowVisible(hWnd: HWND) -> BOOL;
+        pub fn MessageBeep(uType: UINT) -> BOOL;
+        pub fn FlashWindow(hWnd: HWND, bInvert: BOOL) -> BOOL;
+        pub fn SetForegroundWindow(hWnd: HWND) -> BOOL;
+        pub fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
     }
 
     #[link(name = "kernel32")]
@@ -334,6 +338,56 @@ pub fn get_local_hostname() -> Option<String> {
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
 }
+
+/// Plays a native Windows system warning sound to physically alert the user of focus violations.
+#[cfg(target_os = "windows")]
+pub fn play_system_alert() {
+    unsafe {
+        // 0x30 = MB_ICONEXCLAMATION / MB_ICONWARNING
+        let _ = win32::MessageBeep(0x0000_0030);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn play_system_alert() {}
+
+/// Plays an urgent warning sound and brings the FlowGuard desktop window to the front
+/// (or flashes its taskbar button in amber) to actively confront the user when grace expires.
+#[cfg(target_os = "windows")]
+pub fn alert_focus_violation() {
+    unsafe {
+        // 1. Play native Windows exclamation/warning beep
+        let _ = win32::MessageBeep(0x0000_0030);
+
+        // 2. Locate the FlowGuard application window and bring to attention
+        win32::EnumWindows(Some(find_and_flash_flowguard_window), 0);
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn find_and_flash_flowguard_window(
+    hwnd: win32::HWND,
+    _lparam: win32::LPARAM,
+) -> win32::BOOL {
+    if win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    let mut title_buf = [0u16; 512];
+    let title_len = win32::GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
+    if title_len > 0 {
+        let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+        if title.contains("FlowGuard") {
+            win32::ShowWindow(hwnd, 9); // SW_RESTORE
+            win32::SetForegroundWindow(hwnd);
+            win32::FlashWindow(hwnd, 1);
+            return 0; // Stop enumeration once found
+        }
+    }
+    1
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn alert_focus_violation() {}
 
 /// Returns OS and Win32 environment description.
 pub fn get_os_environment_info() -> String {

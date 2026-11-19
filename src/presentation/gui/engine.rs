@@ -195,6 +195,25 @@ impl GuiEngine {
                                 }
                             }
 
+                            let was_intervention = {
+                                let st = self.state.lock().unwrap();
+                                matches!(
+                                    st.last_decision,
+                                    Some(crate::domain::workflow::PolicyDecision::InterventionRequired { .. })
+                                )
+                            };
+
+                            let is_intervention = matches!(
+                                eval.decision,
+                                crate::domain::workflow::PolicyDecision::InterventionRequired { .. }
+                            );
+
+                            if is_intervention && !was_intervention {
+                                crate::infrastructure::native_windows::api::alert_focus_violation();
+                            } else if is_intervention {
+                                crate::infrastructure::native_windows::api::play_system_alert();
+                            }
+
                             let mut st = self.state.lock().unwrap();
                             st.update_activity_feed(&eval.observation);
                             st.last_observation = Some(eval.observation);

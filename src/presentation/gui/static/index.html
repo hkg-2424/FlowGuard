@@ -513,6 +513,48 @@
     </div>
   </div>
 
+  <!-- MODAL 3B: ACTIVE FOCUS INTERVENTION (DEVIATION RESISTANCE) -->
+  <div class="modal-backdrop hidden" id="modal-active-intervention">
+    <div class="modal-card" style="border: 2px solid #ef4444; box-shadow: 0 0 35px rgba(239, 68, 68, 0.45);">
+      <div class="modal-header" style="background: rgba(239, 68, 68, 0.15); border-bottom-color: rgba(239, 68, 68, 0.3);">
+        <div class="modal-title-row">
+          <span class="modal-badge badge-danger">⚠️ WORKFLOW INTERVENTION ACTIVE</span>
+          <h3 style="color: #f87171;">Focus Boundary Enforced</h3>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div style="text-align:center;font-size:2.5rem;margin-bottom:8px;">⛔</div>
+        <h4 style="text-align:center;color:#fff;margin-bottom:6px;">You Deviated From Your Active Workflow!</h4>
+        <p class="text-secondary text-center" style="font-size:0.88rem;">
+          Your 30-second grace window expired while working in an unallowed application or website. FlowGuard resists this distraction to protect your focus.
+        </p>
+
+        <div style="background:rgba(0,0,0,0.35);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:12px;margin:16px 0;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:0.85rem;">
+            <span class="text-muted">Detected Application:</span>
+            <strong id="intervention-app-name" style="color:#f87171;">Detecting...</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:0.85rem;">
+            <span class="text-muted">Window / Page:</span>
+            <span id="intervention-window-title" class="text-xs" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#e2e8f0;">Active Window</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:0.85rem;">
+            <span class="text-muted">Active Workflow:</span>
+            <span id="intervention-wf-name" style="color:#10b981;font-weight:600;">Deep Work</span>
+          </div>
+        </div>
+
+        <p class="text-secondary text-center text-xs">
+          Return to your authorized focus window now to resume accumulating focus time and prevent further quality score decay.
+        </p>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;">
+        <button class="btn btn-secondary btn-sm" id="btn-intervention-give-up" onclick="handleInterventionGiveUp()">End Session</button>
+        <button class="btn btn-primary" onclick="dismissInterventionModal()">I Am Returning to Focus Now</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL 4: CREATE WORKFLOW (NOVICE FRIENDLY) -->
   <div class="modal-backdrop hidden" id="modal-create-workflow" onclick="if(event.target===this) closeCreateWorkflowModal()">
     <div class="modal-card modal-card-lg">
@@ -615,6 +657,22 @@
             <button type="button" class="chip-preset" data-domain="medium.com" onclick="toggleDomainTag('medium.com', 'Medium')"><span class="chip-status">+</span> 📰 Medium</button>
             <button type="button" class="chip-preset" data-domain="wikipedia.org" onclick="toggleDomainTag('wikipedia.org', 'Wikipedia')"><span class="chip-status">+</span> 🌐 Wikipedia</button>
           </div>
+        </div>
+
+        <!-- 3b. Dedicated Allowed YouTube Video / Playlist (Strict Anti-Distraction) -->
+        <div class="section-pickers mt-3" style="border-left: 3px solid #f59e0b;">
+          <div class="picker-header">
+            <div class="picker-title-wrap">
+              <span>🎯</span>
+              <strong>Allow Specific YouTube Video / Playlist</strong>
+              <span class="text-muted text-xs">(Strict mode: blocks all other videos &amp; Shorts)</span>
+            </div>
+          </div>
+          <div class="input-with-action mt-2">
+            <input type="text" id="specific-youtube-input" class="form-control" placeholder="Paste YouTube link (e.g. https://www.youtube.com/watch?v=... or playlist) or lecture title" onkeydown="if(event.key==='Enter'){event.preventDefault();addSpecificYouTube();}">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addSpecificYouTube()">+ Allow Video</button>
+          </div>
+          <span class="form-hint">Tip: Allows ONLY this designated lecture or playlist. All YouTube Shorts and recommended feeds are strictly blocked.</span>
         </div>
 
         <!-- 4. Quick Add Custom Website -->

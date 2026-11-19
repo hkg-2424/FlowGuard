@@ -49,6 +49,30 @@ function playGraceChime() {
   }
 }
 
+function playInterventionAlarm() {
+  if (!soundEnabled) return;
+  try {
+    initAudio();
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    [0, 0.18, 0.36].forEach((offset) => {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(440, now + offset);
+      osc.frequency.setValueAtTime(349.23, now + offset + 0.09);
+      gain.gain.setValueAtTime(0.07, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.16);
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.16);
+    });
+  } catch (e) {
+    console.debug('Intervention audio error:', e);
+  }
+}
+
 function playPullBackChime() {
   if (!soundEnabled) return;
   try {
@@ -369,6 +393,14 @@ async function loadRunningApps() {
   }
 }
 
+function cleanBrowserTitle(title) {
+  if (!title) return '';
+  return title
+    .replace(/\s*-\s*(Google Chrome|Microsoft Edge|Brave|Mozilla Firefox|Opera|Vivaldi|Personal\s*-\s*Microsoft Edge).*$/i, '')
+    .replace(/\s*-\s*YouTube.*$/i, '')
+    .trim();
+}
+
 function renderOpenAppsChips() {
   const container = document.getElementById('open-apps-chips');
   if (!container) return;
@@ -390,7 +422,7 @@ function renderOpenAppsChips() {
     return `
       <button type="button" class="chip-preset chip-open-app ${isSelected ? 'selected' : ''}" 
               style="display: ${isVisible ? 'inline-flex' : 'none'};"
-              onclick="toggleAppTag('${escapeJs(app.process_name)}', '${escapeJs(app.display_name)}')">
+              onclick="toggleAppTag('${escapeJs(app.process_name)}', '${escapeJs(app.display_name)}', '${escapeJs(app.window_title || '')}')">
         <span>${isSelected ? '✓' : '+'}</span>
         <strong>${escapeHtml(app.display_name)}</strong>
         <span class="text-muted text-xs">${escapeHtml(shortTitle)}</span>
@@ -403,12 +435,30 @@ function filterRunningApps(query) {
   renderOpenAppsChips();
 }
 
-function toggleAppTag(processName, displayName) {
+function toggleAppTag(processName, displayName, windowTitle) {
   const key = processName.toLowerCase();
+  const cleanProc = key.replace(/\.exe$/i, '');
+  const isBrowser = ['chrome', 'msedge', 'brave', 'firefox', 'opera', 'vivaldi'].includes(cleanProc);
+
   if (selectedApps.has(key)) {
     selectedApps.delete(key);
+    // If was browser, also remove associated specific page title if present
+    if (isBrowser && windowTitle) {
+      const cleanTitle = cleanBrowserTitle(windowTitle);
+      if (cleanTitle) {
+        selectedDomains.delete(cleanTitle.toLowerCase());
+      }
+    }
   } else {
     selectedApps.set(key, displayName || processName);
+    // If selecting an open browser with an active page/lecture, automatically allow that specific course/page
+    if (isBrowser && windowTitle) {
+      const cleanTitle = cleanBrowserTitle(windowTitle);
+      if (cleanTitle && cleanTitle.length >= 3 && !['new tab', 'start page', 'home'].includes(cleanTitle.toLowerCase())) {
+        selectedDomains.set(cleanTitle.toLowerCase(), cleanTitle);
+        showToast(`Allowed ${displayName || processName} with active page: "${cleanTitle}"`, 'success');
+      }
+    }
   }
   renderSelectedTags();
   renderOpenAppsChips();
@@ -453,6 +503,26 @@ function addCustomDomain() {
   input.value = '';
   renderSelectedTags();
   showToast(`Added allowed site: ${domain}`, 'success');
+}
+
+function addSpecificYouTube() {
+  const input = document.getElementById('specific-youtube-input');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+
+  if (raw.includes('youtube.com/watch') || raw.includes('youtu.be/')) {
+    showToast('Please enter the video or course title keywords (e.g. "Complete Web Dev") so FlowGuard can match your browser tab and strictly block Shorts!', 'info');
+    return;
+  }
+
+  const target = raw.toLowerCase();
+  const label = `Lecture: ${raw}`;
+
+  selectedDomains.set(target, label);
+  input.value = '';
+  renderSelectedTags();
+  showToast(`Added allowed lecture/video: ${raw}`, 'success');
 }
 
 function clearAllSelectedApps() {
@@ -633,7 +703,16 @@ async function pollSession() {
     renderSession(snap);
     updateStatusHeader(snap);
   } catch (err) {
-    console.error('Poll error:', err);
+    console.debug('Poll error (server possibly offline):', err);
+    const dot = document.getElementById('status-dot');
+    if (dot) {
+      dot.classList.remove('connected');
+      dot.classList.add('disconnected');
+    }
+    const sourceText = document.getElementById('source-name');
+    if (sourceText) {
+      sourceText.textContent = 'Disconnected (Server offline)';
+    }
   }
 }
 
@@ -705,6 +784,7 @@ function renderSession(snap) {
   const totalCircumference = 691.15; // 2 * PI * 110
 
   if (snap.policy_status === 'GracePeriod') {
+    document.title = `⚠️ (${snap.grace_remaining_seconds}s Grace) Return to Flow — FlowGuard`;
     // Play gentle audio warning cue upon first entering grace period
     if (previousPolicyStatus !== 'GracePeriod') {
       playGraceChime();
@@ -728,7 +808,46 @@ function renderSession(snap) {
     graceRing.style.strokeDashoffset = totalCircumference * (1 - graceFraction);
 
   } else if (snap.policy_status === 'InterventionRequired') {
-    // Grace expired!
+    // Grace expired! Full active deviation resistance
+    document.title = '⛔ FOCUS INTERVENTION REQUIRED! — FlowGuard';
+    if (previousPolicyStatus !== 'InterventionRequired') {
+      playInterventionAlarm();
+      window.focus();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification('⛔ FlowGuard Focus Intervention Required!', {
+            body: `You drifted from "${snap.workflow_name || 'Workflow'}" to ${snap.current_app || 'another app'}. Please return to focus!`,
+            requireInteraction: true
+          });
+        } catch (_) {}
+      }
+    }
+
+    // Show Active Intervention Boundary Screen
+    const interventionModal = document.getElementById('modal-active-intervention');
+    if (interventionModal && interventionModal.classList.contains('hidden')) {
+      interventionModal.classList.remove('hidden');
+      syncModalBodyLock();
+    }
+
+    const appNameEl = document.getElementById('intervention-app-name');
+    if (appNameEl) appNameEl.textContent = snap.current_app || 'Unknown Application';
+    const windowTitleEl = document.getElementById('intervention-window-title');
+    if (windowTitleEl) windowTitleEl.textContent = snap.current_title || 'Unauthorized Window';
+    const wfNameEl = document.getElementById('intervention-wf-name');
+    if (wfNameEl) wfNameEl.textContent = snap.workflow_name || 'Active Workflow';
+
+    const btnGiveUp = document.getElementById('btn-intervention-give-up');
+    if (btnGiveUp) {
+      if (snap.contract_type === 'Unbreakable') {
+        btnGiveUp.textContent = '🔒 Early Exit Locked';
+        btnGiveUp.disabled = true;
+      } else {
+        btnGiveUp.textContent = 'End Session';
+        btnGiveUp.disabled = false;
+      }
+    }
+
     graceLabel.classList.remove('hidden');
     graceSecondsText.textContent = '0s (Distraction Active)';
 
@@ -744,6 +863,13 @@ function renderSession(snap) {
 
   } else {
     // In Flow / Allowed Context
+    document.title = 'FlowGuard — Focus & Productivity Assistant';
+    const interventionModal = document.getElementById('modal-active-intervention');
+    if (interventionModal && !interventionModal.classList.contains('hidden')) {
+      interventionModal.classList.add('hidden');
+      syncModalBodyLock();
+    }
+
     graceLabel.classList.add('hidden');
     alertBanner.classList.add('hidden');
 
@@ -1001,6 +1127,9 @@ function playGentleChime() {
 // -----------------------------------------------------------------------------
 async function startWorkflowSession(workflowId) {
   initAudio();
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
   try {
     const res = await fetch('/api/session/start', {
       method: 'POST',
@@ -1096,6 +1225,18 @@ function closeAccountableModal() {
 function closeUnbreakableModal() {
   document.getElementById('modal-unbreakable-warning').classList.add('hidden');
   syncModalBodyLock();
+}
+
+function dismissInterventionModal() {
+  const modal = document.getElementById('modal-active-intervention');
+  if (modal) modal.classList.add('hidden');
+  syncModalBodyLock();
+  showToast('Returning to allowed focus tools...', 'info');
+}
+
+function handleInterventionGiveUp() {
+  dismissInterventionModal();
+  handleEndSessionClick();
 }
 
 async function submitEarlyExit() {

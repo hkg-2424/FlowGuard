@@ -132,6 +132,13 @@ pub fn title_matches_domain(title: &str, pattern: &str) -> bool {
     let pattern_lower = pattern.to_lowercase();
     let sld = pattern_lower.strip_prefix("*.").unwrap_or(&pattern_lower);
 
+    // If pattern contains path or query (like "youtube.com/watch" or specific video id),
+    // require exact substring match rather than extracting domain tokens like "youtube"
+    // which would otherwise match every unrelated video on YouTube.
+    if sld.contains('/') || sld.contains('?') || sld.contains('=') {
+        return title_lower.contains(sld);
+    }
+
     // 1. Direct substring match (e.g. title contains "docs.rs" or "github.com")
     if title_lower.contains(sld) {
         return true;
@@ -213,10 +220,12 @@ pub fn is_short_form_media(observation: &ActivityObservation) -> bool {
             "shorts -",
             " - shorts",
             "/shorts",
+            "shorts",
             "#reels",
             "#reel",
             "/reels",
             "/reel",
+            "reels",
             "tiktok",
         ];
         for m in &markers {
