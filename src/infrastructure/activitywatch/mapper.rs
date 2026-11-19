@@ -80,7 +80,7 @@ pub fn sanitize_url(raw: &str) -> Option<String> {
 
         let is_youtube_watch = parsed
             .host_str()
-            .map(|h| h.ends_with("youtube.com") || h == "youtu.be")
+            .map(|h| h == "youtube.com" || h.ends_with(".youtube.com") || h == "youtu.be")
             .unwrap_or(false)
             && parsed.path() == "/watch";
 

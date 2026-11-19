@@ -8,6 +8,13 @@ use super::entities::{
 use super::timer::{GracePeriodTimer, TimerStatus};
 use crate::domain::activity::{ActivityObservation, FreshnessState, IdleState};
 
+fn is_valid_youtube_video_id(id: &str) -> bool {
+    id.len() == 11
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Parses a structured canonical resource from a URL.
 pub fn parse_canonical_resource(url_str: &str) -> Option<CanonicalResource> {
     let parsed = Url::parse(url_str).ok()?;
@@ -15,10 +22,11 @@ pub fn parse_canonical_resource(url_str: &str) -> Option<CanonicalResource> {
     let path = parsed.path();
 
     // YouTube video recognition across desktop, mobile, shorts, and embeds
-    if host.ends_with("youtube.com") || host == "youtu.be" {
+    let is_yt = host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be";
+    if is_yt {
         if host == "youtu.be" {
-            let id = path.trim_start_matches('/');
-            if !id.is_empty() {
+            let id = path.trim_start_matches('/').split('/').next()?;
+            if is_valid_youtube_video_id(id) {
                 return Some(CanonicalResource::YouTubeVideo {
                     video_id: id.to_string(),
                 });
@@ -28,17 +36,19 @@ pub fn parse_canonical_resource(url_str: &str) -> Option<CanonicalResource> {
                 .query_pairs()
                 .find(|(k, _)| k == "v")
                 .map(|(_, v)| v.to_string())?;
-            return Some(CanonicalResource::YouTubeVideo { video_id: vid });
+            if is_valid_youtube_video_id(&vid) {
+                return Some(CanonicalResource::YouTubeVideo { video_id: vid });
+            }
         } else if path.starts_with("/shorts/") {
-            let id = path.trim_start_matches("/shorts/");
-            if !id.is_empty() {
+            let id = path.trim_start_matches("/shorts/").split('/').next()?;
+            if is_valid_youtube_video_id(id) {
                 return Some(CanonicalResource::YouTubeVideo {
                     video_id: id.to_string(),
                 });
             }
         } else if path.starts_with("/embed/") {
-            let id = path.trim_start_matches("/embed/");
-            if !id.is_empty() {
+            let id = path.trim_start_matches("/embed/").split('/').next()?;
+            if is_valid_youtube_video_id(id) {
                 return Some(CanonicalResource::YouTubeVideo {
                     video_id: id.to_string(),
                 });
@@ -47,7 +57,8 @@ pub fn parse_canonical_resource(url_str: &str) -> Option<CanonicalResource> {
     }
 
     // LeetCode problem slug recognition
-    if host.ends_with("leetcode.com") && path.starts_with("/problems/") {
+    let is_leetcode = host == "leetcode.com" || host.ends_with(".leetcode.com");
+    if is_leetcode && path.starts_with("/problems/") {
         let slug = path
             .trim_start_matches("/problems/")
             .trim_end_matches('/')
@@ -61,13 +72,40 @@ pub fn parse_canonical_resource(url_str: &str) -> Option<CanonicalResource> {
     }
 
     // GitHub repository recognition
-    if host == "github.com" {
+    if host == "github.com" || host == "www.github.com" {
         let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
         if segments.len() >= 2 && !segments[0].is_empty() && !segments[1].is_empty() {
-            return Some(CanonicalResource::GitHubRepo {
-                owner: segments[0].to_string(),
-                repo: segments[1].to_string(),
-            });
+            let owner = segments[0].to_lowercase();
+            let reserved = [
+                "settings",
+                "features",
+                "explore",
+                "trending",
+                "pricing",
+                "contact",
+                "security",
+                "login",
+                "signup",
+                "organizations",
+                "orgs",
+                "pulls",
+                "issues",
+                "notifications",
+                "marketplace",
+                "topics",
+                "collections",
+                "events",
+                "about",
+            ];
+            if !reserved.contains(&owner.as_str()) {
+                let repo = segments[1].trim_end_matches(".git");
+                if !repo.is_empty() {
+                    return Some(CanonicalResource::GitHubRepo {
+                        owner: segments[0].to_string(),
+                        repo: repo.to_string(),
+                    });
+                }
+            }
         }
     }
 
@@ -183,14 +221,15 @@ impl RuleEngine {
             };
 
             if matches {
-                let score = (rule.scope as u32) * 1000 + rule.priority_weight;
-                matching_rules.push((rule, score));
+                matching_rules.push((rule, rule.priority_weight));
             }
         }
 
-        // 6. Conflict Resolution & Specificity Sorting
+        // 6. Conflict Resolution & Specificity Sorting: Higher scope unconditionally wins
         matching_rules.sort_by(|a, b| {
-            b.1.cmp(&a.1)
+            b.0.scope
+                .cmp(&a.0.scope)
+                .then_with(|| b.1.cmp(&a.1))
                 .then_with(|| {
                     // Safe-by-default: Restrict beats Allow on exact tie
                     match (a.0.effect, b.0.effect) {

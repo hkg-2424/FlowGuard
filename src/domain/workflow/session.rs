@@ -107,6 +107,12 @@ impl WorkflowSession {
 
     /// Transitions session from `Active` to `Paused`.
     pub fn pause(&mut self) -> Result<(), SessionError> {
+        if matches!(
+            self.commitment_contract,
+            CommitmentContract::Unbreakable { .. }
+        ) {
+            return Err(SessionError::CannotBreakUnbreakableWorkflow);
+        }
         if self.state != SessionState::Active {
             return Err(SessionError::InvalidTransition {
                 from: self.state,

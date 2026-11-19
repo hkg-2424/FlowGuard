@@ -49,6 +49,7 @@ pub struct AwRawEvent {
     /// Start timestamp of the observation in UTC.
     pub timestamp: DateTime<Utc>,
     /// Duration of the event in seconds (can be 0.0 for instantaneous events).
+    #[serde(default)]
     pub duration: f64,
     /// Freeform event data dictionary.
     #[serde(default)]

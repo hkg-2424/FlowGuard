@@ -35,6 +35,8 @@ struct ActiveViolation {
     started_at: Instant,
     grace_duration: Duration,
     intervened: bool,
+    paused_at: Option<Instant>,
+    total_paused_duration: Duration,
 }
 
 /// Monotonic, drift-resilient grace period timer.
@@ -42,7 +44,7 @@ struct ActiveViolation {
 /// Guarantees:
 /// 1. Uses [`Instant`] so clock skew, DST shifts, or NTP updates never distort countdowns.
 /// 2. Accurately records sub-30s self-corrections for focus resilience analytics.
-/// 3. Pauses during AFK or session suspension.
+/// 3. Pauses during AFK or session suspension without leaking elapsed grace time.
 #[derive(Debug, Default)]
 pub struct GracePeriodTimer {
     active_violation: Option<ActiveViolation>,
@@ -63,7 +65,13 @@ impl GracePeriodTimer {
         let grace_duration = Duration::from_secs(grace_seconds as u64);
 
         let violation = match self.active_violation.as_mut() {
-            Some(v) if v.rule_id == *rule_id && v.target_name == target_name => v,
+            Some(v) if v.rule_id == *rule_id && v.target_name == target_name => {
+                // If resuming from pause (e.g. user was AFK), accumulate paused duration
+                if let Some(paused_time) = v.paused_at.take() {
+                    v.total_paused_duration += now.saturating_duration_since(paused_time);
+                }
+                v
+            }
             _ => {
                 // New violation started
                 self.active_violation = Some(ActiveViolation {
@@ -72,14 +80,18 @@ impl GracePeriodTimer {
                     started_at: now,
                     grace_duration,
                     intervened: false,
+                    paused_at: None,
+                    total_paused_duration: Duration::ZERO,
                 });
                 self.active_violation.as_mut().unwrap()
             }
         };
 
-        let elapsed = now.saturating_duration_since(violation.started_at);
-        if elapsed < violation.grace_duration {
-            let remaining = (violation.grace_duration - elapsed).as_secs() as u32;
+        let raw_elapsed = now.saturating_duration_since(violation.started_at);
+        let active_elapsed = raw_elapsed.saturating_sub(violation.total_paused_duration);
+
+        if active_elapsed < violation.grace_duration {
+            let remaining = (violation.grace_duration - active_elapsed).as_secs() as u32;
             TimerStatus::GracePeriod {
                 remaining_seconds: remaining,
                 total_grace_seconds: grace_seconds,
@@ -96,14 +108,20 @@ impl GracePeriodTimer {
     /// Cancels any active violation when the user returns to an allowed activity.
     /// Returns a [`DriftResolution`] if an active violation was resolved.
     pub fn cancel(&mut self) -> Option<DriftResolution> {
-        let violation = self.active_violation.take()?;
-        let elapsed = Instant::now().saturating_duration_since(violation.started_at);
+        let mut violation = self.active_violation.take()?;
+        let now = Instant::now();
+        if let Some(paused_time) = violation.paused_at.take() {
+            violation.total_paused_duration += now.saturating_duration_since(paused_time);
+        }
+
+        let raw_elapsed = now.saturating_duration_since(violation.started_at);
+        let active_elapsed = raw_elapsed.saturating_sub(violation.total_paused_duration);
 
         let res = if violation.intervened {
             DriftResolution::Intervened
         } else {
             DriftResolution::SelfCorrected {
-                recovery_seconds: elapsed.as_secs().max(1) as u32,
+                recovery_seconds: active_elapsed.as_secs().max(1) as u32,
             }
         };
         self.last_resolution = Some(res.clone());
@@ -115,9 +133,13 @@ impl GracePeriodTimer {
         self.last_resolution.take()
     }
 
-    /// Suspends the timer during AFK or system sleep without resetting elapsed time.
+    /// Suspends the timer during AFK or system sleep without leaking elapsed time.
     pub fn pause(&mut self) {
-        // Violation remains registered, avoiding accidental cancellation while user is AFK
+        if let Some(ref mut v) = self.active_violation {
+            if v.paused_at.is_none() {
+                v.paused_at = Some(Instant::now());
+            }
+        }
     }
 
     /// Resets the timer completely without returning a resolution.
@@ -129,5 +151,17 @@ impl GracePeriodTimer {
     /// Returns true if a violation is currently active.
     pub fn is_active(&self) -> bool {
         self.active_violation.is_some()
+    }
+
+    /// Returns the target name of the currently active violation, if any.
+    pub fn active_target(&self) -> Option<&str> {
+        self.active_violation
+            .as_ref()
+            .map(|v| v.target_name.as_str())
+    }
+
+    /// Returns the rule id of the currently active violation, if any.
+    pub fn active_rule_id(&self) -> Option<&RuleId> {
+        self.active_violation.as_ref().map(|v| &v.rule_id)
     }
 }

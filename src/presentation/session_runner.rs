@@ -93,18 +93,18 @@ pub fn print_session_tick(eval: &SessionEvaluation, target_seconds: Option<u64>,
     let app_display = truncate_str(app, 20);
     let title_display = truncate_str(title, if verbose { 50 } else { 32 });
 
-    let (badge, color_desc) = match &eval.decision {
+    let grace_note;
+    let (badge, color_desc): (&str, &str) = match &eval.decision {
         PolicyDecision::Allowed { .. } => ("[ALIGNED]", "On planned task"),
         PolicyDecision::WarningRequired { reason, .. } => ("[WARN]", reason.as_str()),
         PolicyDecision::GracePeriod {
             remaining_seconds, ..
         } => {
-            let note = format!(
+            grace_note = format!(
                 "OUTSIDE WORKFLOW - Grace period: {}s remaining",
                 remaining_seconds
             );
-            // Leak isn't possible here because we format inline
-            ("[GRACE]", Box::leak(note.into_boxed_str()) as &str)
+            ("[GRACE]", grace_note.as_str())
         }
         PolicyDecision::InterventionRequired { .. } => (
             "[INTERVENTION REQUIRED]",
@@ -253,126 +253,117 @@ pub fn run_interactive_session(
     let slice = Duration::from_millis(50);
     let poll_interval = Duration::from_millis(1000);
 
-    while running.load(Ordering::SeqCst) {
-        match service.evaluate_tick() {
-            Ok(eval) => {
-                // If target duration reached, complete session naturally!
-                let elapsed = eval.session.duration_seconds(Utc::now());
-                if let Some(target) = target_seconds {
-                    if elapsed >= target {
-                        println!();
-                        println!("================================================================================");
-                        println!(
-                            "  CONGRATULATIONS! Target focus duration of {} minutes achieved!",
-                            target / 60
-                        );
-                        println!("================================================================================");
-                        return service.complete_session();
+    loop {
+        while running.load(Ordering::SeqCst) {
+            match service.evaluate_tick() {
+                Ok(eval) => {
+                    // If target duration reached, complete session naturally!
+                    let elapsed = eval.session.duration_seconds(Utc::now());
+                    if let Some(target) = target_seconds {
+                        if elapsed >= target {
+                            println!();
+                            println!("================================================================================");
+                            println!(
+                                "  CONGRATULATIONS! Target focus duration of {} minutes achieved!",
+                                target / 60
+                            );
+                            println!("================================================================================");
+                            return service.complete_session();
+                        }
+                    }
+
+                    // Print tick if state changed or in grace period or every 5 seconds
+                    let should_print = match (&last_status_decision, &eval.decision) {
+                        (
+                            Some(PolicyDecision::GracePeriod { .. }),
+                            PolicyDecision::GracePeriod { .. },
+                        ) => true,
+                        (Some(prev), curr) => prev != curr,
+                        (None, _) => true,
+                    };
+
+                    if should_print || elapsed % 5 == 0 {
+                        print_session_tick(&eval, target_seconds, verbose);
+                        last_status_decision = Some(eval.decision);
                     }
                 }
+                Err(WorkflowServiceError::Source(err)) => {
+                    eprintln!("[warning] Activity observation error: {}", err);
+                }
+                Err(err) => return Err(err),
+            }
 
-                // Print tick if state changed or in grace period or every 5 seconds
-                let should_print = match (&last_status_decision, &eval.decision) {
-                    (
-                        Some(PolicyDecision::GracePeriod { .. }),
-                        PolicyDecision::GracePeriod { .. },
-                    ) => true,
-                    (Some(prev), curr) => prev != curr,
-                    (None, _) => true,
-                };
+            // Sleep in 50ms slices
+            let mut remaining = poll_interval;
+            while remaining > Duration::ZERO && running.load(Ordering::SeqCst) {
+                let step = slice.min(remaining);
+                std::thread::sleep(step);
+                remaining = remaining.saturating_sub(step);
+            }
+        }
 
-                if should_print || elapsed % 5 == 0 {
-                    print_session_tick(&eval, target_seconds, verbose);
-                    last_status_decision = Some(eval.decision);
+        // Ctrl+C was pressed! Enforce Commitment Contract rules.
+        println!();
+        println!(">> Session exit requested via signal.");
+
+        match &session.commitment_contract {
+            CommitmentContract::Unbreakable {
+                target_duration_seconds,
+            } => {
+                let elapsed = service
+                    .active_session()
+                    .map(|s| s.duration_seconds(Utc::now()))
+                    .unwrap_or(0);
+                if elapsed < *target_duration_seconds {
+                    println!(">> CANNOT EXIT: This session is bound by an UNBREAKABLE contract.");
+                    println!(
+                        ">> Target duration: {}. Elapsed so far: {}.",
+                        format_duration_natural(*target_duration_seconds),
+                        format_duration_natural(elapsed)
+                    );
+                    println!(">> Resuming workflow monitoring...");
+                    running.store(true, Ordering::SeqCst);
+                    continue;
+                } else {
+                    return service.complete_session();
                 }
             }
-            Err(WorkflowServiceError::Source(err)) => {
-                eprintln!("[warning] Activity observation error: {}", err);
-            }
-            Err(err) => return Err(err),
-        }
-
-        // Sleep in 50ms slices
-        let mut remaining = poll_interval;
-        while remaining > Duration::ZERO && running.load(Ordering::SeqCst) {
-            let step = slice.min(remaining);
-            std::thread::sleep(step);
-            remaining = remaining.saturating_sub(step);
-        }
-    }
-
-    // Ctrl+C was pressed! Enforce Commitment Contract rules.
-    println!();
-    println!(">> Session exit requested via signal.");
-
-    match &session.commitment_contract {
-        CommitmentContract::Unbreakable {
-            target_duration_seconds,
-        } => {
-            let elapsed = service
-                .active_session()
-                .map(|s| s.duration_seconds(Utc::now()))
-                .unwrap_or(0);
-            if elapsed < *target_duration_seconds {
-                println!(">> CANNOT EXIT: This session is bound by an UNBREAKABLE contract.");
-                println!(
-                    ">> Target duration: {}. Elapsed so far: {}.",
-                    format_duration_natural(*target_duration_seconds),
-                    format_duration_natural(elapsed)
+            CommitmentContract::AccountableBreakable {
+                min_reason_characters,
+            } => {
+                print!(
+                    ">> ACCOUNTABLE COMMITMENT: Written reason required to break workflow (min {} chars): ",
+                    min_reason_characters
                 );
-                println!(">> Resuming workflow monitoring...");
-                running.store(true, Ordering::SeqCst);
-                run_interactive_session(
-                    service,
-                    session,
-                    workflow_name,
-                    target_duration_mins,
-                    running,
-                    verbose,
-                )
-            } else {
-                service.complete_session()
-            }
-        }
-        CommitmentContract::AccountableBreakable {
-            min_reason_characters,
-        } => {
-            print!(
-                ">> ACCOUNTABLE COMMITMENT: Written reason required to break workflow (min {} chars): ",
-                min_reason_characters
-            );
-            io::stdout().flush().ok();
+                io::stdout().flush().ok();
 
-            let mut input = String::new();
-            if io::stdin().read_line(&mut input).is_ok() {
-                let trimmed = input.trim();
-                match service.cancel_session(Some(trimmed.to_string())) {
-                    Ok(cancelled) => Ok(cancelled),
-                    Err(WorkflowServiceError::Session(SessionError::InsufficientReason {
-                        min_chars,
-                        actual_chars,
-                    })) => {
-                        println!(
-                            ">> Exit rejected: Reason too short ({} chars provided, minimum {} required).",
-                            actual_chars, min_chars
-                        );
-                        println!(">> Resuming workflow monitoring...");
-                        running.store(true, Ordering::SeqCst);
-                        run_interactive_session(
-                            service,
-                            session,
-                            workflow_name,
-                            target_duration_mins,
-                            running,
-                            verbose,
-                        )
+                let mut input = String::new();
+                if io::stdin().read_line(&mut input).is_ok() && !input.trim().is_empty() {
+                    let trimmed = input.trim();
+                    match service.cancel_session(Some(trimmed.to_string())) {
+                        Ok(cancelled) => return Ok(cancelled),
+                        Err(WorkflowServiceError::Session(SessionError::InsufficientReason {
+                            min_chars,
+                            actual_chars,
+                        })) => {
+                            println!(
+                                ">> Exit rejected: Reason too short ({} chars provided, minimum {} required).",
+                                actual_chars, min_chars
+                            );
+                            println!(">> Resuming workflow monitoring...");
+                            running.store(true, Ordering::SeqCst);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => Err(e),
+                } else {
+                    println!(">> Exit rejected: No reason provided.");
+                    println!(">> Resuming workflow monitoring...");
+                    running.store(true, Ordering::SeqCst);
+                    continue;
                 }
-            } else {
-                service.cancel_session(Some("Interrupted".into()))
             }
+            CommitmentContract::Standard => return service.cancel_session(None),
         }
-        CommitmentContract::Standard => service.cancel_session(None),
     }
 }

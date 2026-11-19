@@ -56,6 +56,8 @@ pub struct WorkflowService {
     active_session: Option<WorkflowSession>,
     active_workflow: Option<Workflow>,
     poll_interval: Duration,
+    in_active_intervention: bool,
+    last_tick_time: Option<std::time::Instant>,
 }
 
 impl WorkflowService {
@@ -74,6 +76,8 @@ impl WorkflowService {
             active_session: None,
             active_workflow: None,
             poll_interval: Duration::from_millis(poll_interval_ms.max(500)),
+            in_active_intervention: false,
+            last_tick_time: None,
         }
     }
 
@@ -104,6 +108,8 @@ impl WorkflowService {
 
         session.start()?;
         self.timer.reset();
+        self.in_active_intervention = false;
+        self.last_tick_time = Some(std::time::Instant::now());
         self.session_repo.save(&session)?;
 
         self.active_workflow = Some(workflow);
@@ -161,6 +167,8 @@ impl WorkflowService {
         }
 
         self.timer.reset();
+        self.in_active_intervention = false;
+        self.last_tick_time = None;
         self.session_repo.save(&session)?;
         self.active_workflow = None;
 
@@ -177,6 +185,8 @@ impl WorkflowService {
 
         session.complete()?;
         self.timer.reset();
+        self.in_active_intervention = false;
+        self.last_tick_time = None;
         self.session_repo.save(&session)?;
         self.active_workflow = None;
 
@@ -213,6 +223,7 @@ impl WorkflowService {
 
         let obs = self.source.poll()?;
         let now = Utc::now();
+        let violation_target = self.timer.active_target().map(|s| s.to_string());
         let was_violating = self.timer.is_active();
 
         let decision = self.engine.evaluate(&obs, workflow, &mut self.timer, now);
@@ -224,9 +235,11 @@ impl WorkflowService {
                 self.timer.take_last_resolution()
             {
                 session.pull_back_count += 1;
+                let target_name = violation_target
+                    .unwrap_or_else(|| obs.application.clone().unwrap_or_else(|| "unknown".into()));
                 let event = DriftEvent {
                     session_id: session.id.clone(),
-                    target_name: obs.application.clone().unwrap_or_else(|| "unknown".into()),
+                    target_name,
                     duration_seconds: recovery_seconds,
                     resolution: DriftResolution::SelfCorrected { recovery_seconds },
                     timestamp: now,
@@ -236,8 +249,24 @@ impl WorkflowService {
             }
         }
 
+        if decision.is_allowed() {
+            self.in_active_intervention = false;
+        }
+
         // Temporal accounting step
-        let tick_secs = (self.poll_interval.as_millis() / 1000).max(1) as u64;
+        let now_instant = std::time::Instant::now();
+        let tick_secs = if let Some(last) = self.last_tick_time {
+            let elapsed = now_instant.saturating_duration_since(last).as_secs();
+            if elapsed == 0 {
+                (self.poll_interval.as_millis() / 1000).max(1) as u64
+            } else {
+                elapsed
+            }
+        } else {
+            (self.poll_interval.as_millis() / 1000).max(1) as u64
+        };
+        self.last_tick_time = Some(now_instant);
+
         match &decision {
             PolicyDecision::Allowed { .. } => {
                 session.total_focus_seconds += tick_secs;
@@ -247,7 +276,10 @@ impl WorkflowService {
             }
             PolicyDecision::InterventionRequired { .. } => {
                 session.total_distraction_seconds += tick_secs;
-                session.intervention_count += 1;
+                if !self.in_active_intervention {
+                    session.intervention_count += 1;
+                    self.in_active_intervention = true;
+                }
             }
             PolicyDecision::Ignored { reason } if reason.contains("AFK") => {
                 session.total_afk_seconds += tick_secs;
