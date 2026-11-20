@@ -1,7 +1,7 @@
 use chrono::Local;
 use std::io::Write;
 
-use super::truncate::truncate_str;
+use super::truncate::{escape_terminal_safe, truncate_str};
 use crate::domain::{
     ActivityCapabilities, ActivityObservation, DiagnosticReport, IdleState, SourceHealth,
     SubsystemStatus,
@@ -12,31 +12,39 @@ pub fn print_doctor_report(report: &DiagnosticReport, _verbose: bool) {
     println!();
     println!(
         "=== FlowGuard Doctor: {} Integration Diagnostics ===",
-        report.provider_name
+        escape_terminal_safe(&report.provider_name)
     );
     println!();
 
     // 1. Endpoint & Handshake
     println!("Activity Source Configuration:");
-    println!("  Provider:            {}", report.provider_name);
-    println!("  Endpoint URL:        {}", report.endpoint);
+    println!(
+        "  Provider:            {}",
+        escape_terminal_safe(&report.provider_name)
+    );
+    println!(
+        "  Endpoint URL:        {}",
+        escape_terminal_safe(&report.endpoint)
+    );
     println!(
         "  Reachable:           {}",
         if report.is_reachable { "Yes" } else { "NO" }
     );
     println!(
         "  Service Identity:    {}",
-        report
-            .service_identity
-            .as_deref()
-            .unwrap_or("UNKNOWN / UNREACHABLE")
+        escape_terminal_safe(
+            report
+                .service_identity
+                .as_deref()
+                .unwrap_or("UNKNOWN / UNREACHABLE")
+        )
     );
 
     if let Some(ref ver) = report.server_version {
-        println!("  Server Version:      {}", ver);
+        println!("  Server Version:      {}", escape_terminal_safe(ver));
     }
     if let Some(ref host) = report.hostname {
-        println!("  Server Hostname:     {}", host);
+        println!("  Server Hostname:     {}", escape_terminal_safe(host));
     }
     if report.is_reachable {
         println!(
@@ -48,7 +56,7 @@ pub fn print_doctor_report(report: &DiagnosticReport, _verbose: bool) {
             }
         );
         if let Some(ref profile) = report.server_profile {
-            println!("  Server Profile:      {}", profile);
+            println!("  Server Profile:      {}", escape_terminal_safe(profile));
         }
     }
     println!();
@@ -68,7 +76,10 @@ pub fn print_doctor_report(report: &DiagnosticReport, _verbose: bool) {
             let target_desc = sub.target.as_deref().unwrap_or("None / Not Detected");
             println!(
                 "  - {:<22} : {} {} ({})",
-                sub.name, target_desc, status_badge, sub.details
+                escape_terminal_safe(&sub.name),
+                escape_terminal_safe(target_desc),
+                status_badge,
+                escape_terminal_safe(&sub.details)
             );
         }
         println!();
@@ -103,7 +114,7 @@ pub fn print_doctor_report(report: &DiagnosticReport, _verbose: bool) {
     if !report.diagnostics.is_empty() {
         println!("Diagnostics & Warnings:");
         for diag in &report.diagnostics {
-            println!("  [!] {}", diag);
+            println!("  [!] {}", escape_terminal_safe(diag));
         }
         println!();
     }
@@ -200,13 +211,13 @@ pub fn print_observation_snapshot(obs: &ActivityObservation, verbose: bool) {
 
     println!(
         "Application:     {}",
-        obs.application.as_deref().unwrap_or("[Unknown / None]")
+        escape_terminal_safe(obs.application.as_deref().unwrap_or("[Unknown / None]"))
     );
 
     let title_display = match &obs.window_title {
         Some(title) => {
             if verbose {
-                title.clone()
+                escape_terminal_safe(title)
             } else {
                 truncate_str(title, 60)
             }
@@ -219,7 +230,7 @@ pub fn print_observation_snapshot(obs: &ActivityObservation, verbose: bool) {
         let url_display = match &browser.url {
             Some(u) => {
                 if verbose {
-                    u.clone()
+                    escape_terminal_safe(u)
                 } else {
                     let sanitized = sanitize_url(u);
                     truncate_str(&sanitized, 60)
@@ -232,7 +243,7 @@ pub fn print_observation_snapshot(obs: &ActivityObservation, verbose: bool) {
         let browser_title_display = match &browser.title {
             Some(t) => {
                 if verbose {
-                    t.clone()
+                    escape_terminal_safe(t)
                 } else {
                     truncate_str(t, 60)
                 }
@@ -269,7 +280,7 @@ pub fn print_observation_snapshot(obs: &ActivityObservation, verbose: bool) {
     if !obs.diagnostics.is_empty() {
         println!("Diagnostics:");
         for d in &obs.diagnostics {
-            println!("  - {}", d);
+            println!("  - {}", escape_terminal_safe(d));
         }
     }
     println!();
@@ -285,12 +296,12 @@ pub fn print_observation_change(obs: &ActivityObservation, verbose: bool) {
         IdleState::Unknown => "[?IDLE ]",
     };
 
-    let app = obs.application.as_deref().unwrap_or("-");
+    let app = escape_terminal_safe(obs.application.as_deref().unwrap_or("-"));
 
     let title = match &obs.window_title {
         Some(t) => {
             if verbose {
-                t.clone()
+                escape_terminal_safe(t)
             } else {
                 truncate_str(t, 40)
             }
@@ -301,7 +312,7 @@ pub fn print_observation_change(obs: &ActivityObservation, verbose: bool) {
     let browser_info = if let Some(ref b) = obs.browser {
         if let Some(ref u) = b.url {
             let display_url = if verbose {
-                u.clone()
+                escape_terminal_safe(u)
             } else {
                 let sanitized = sanitize_url(u);
                 truncate_str(&sanitized, 60)
@@ -327,10 +338,43 @@ pub fn print_observation_change(obs: &ActivityObservation, verbose: bool) {
     std::io::stdout().flush().ok();
 }
 
-/// Sanitizes a URL for privacy by displaying domain and path prefix, omitting sensitive query params.
-fn sanitize_url(url: &str) -> String {
-    match url.split_once('?') {
-        Some((base, _)) => format!("{}?[query-redacted]", base),
-        None => url.to_string(),
+/// Sanitizes a URL structurally for terminal display, removing userinfo, fragments, and sensitive query params (H-23).
+pub fn sanitize_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if let Ok(mut parsed) = url::Url::parse(trimmed) {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        parsed.set_fragment(None);
+
+        let is_youtube_watch = parsed
+            .host_str()
+            .map(|h| h == "youtube.com" || h.ends_with(".youtube.com") || h == "youtu.be")
+            .unwrap_or(false)
+            && parsed.path() == "/watch";
+
+        if is_youtube_watch {
+            let video_id = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "v")
+                .map(|(_, v)| v.to_string());
+            parsed.set_query(None);
+            if let Some(vid) = video_id {
+                parsed.query_pairs_mut().append_pair("v", &vid);
+            }
+        } else if parsed.query().is_some() {
+            parsed.set_query(None);
+        }
+
+        escape_terminal_safe(parsed.as_str())
+    } else {
+        let without_query = match trimmed.split_once('?') {
+            Some((base, _)) => base,
+            None => trimmed,
+        };
+        let without_fragment = match without_query.split_once('#') {
+            Some((base, _)) => base,
+            None => without_query,
+        };
+        escape_terminal_safe(without_fragment)
     }
 }

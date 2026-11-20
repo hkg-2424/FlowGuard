@@ -4,6 +4,81 @@ use unicode_width::UnicodeWidthStr;
 /// Default ellipsis appended when text is truncated.
 pub const DEFAULT_ELLIPSIS: &str = "...";
 
+/// Returns true if a character is a Unicode BiDi control or zero-width formatting character (H-23).
+pub fn is_bidi_or_formatting_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}' // LRE, RLE, PDF, LRO, RLO
+        | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
+        | '\u{200E}'..='\u{200F}' // LRM, RLM
+        | '\u{061C}'              // ALM
+        | '\u{200B}'              // Zero-width space
+        | '\u{FEFF}'              // BOM / Zero-width no-break space
+    )
+}
+
+/// Escapes or sanitizes terminal control sequences, ANSI/OSC codes, C0/C1 control characters,
+/// newlines, and BiDi formatting overrides to prevent terminal injection and prompt spoofing (H-23).
+pub fn escape_terminal_safe(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            // ANSI / VT100 / OSC Escape sequence start
+            '\x1b' => {
+                // If followed by '[' (CSI sequence), consume up to final command byte (0x40..=0x7E)
+                if chars.peek() == Some(&'[') {
+                    chars.next(); // consume '['
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if (0x40..=0x7e).contains(&(next as u32)) {
+                            break;
+                        }
+                    }
+                } else if chars.peek() == Some(&']') {
+                    // OSC sequence: consume until BEL (\x07) or ST (\x1b\)
+                    chars.next(); // consume ']'
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == '\x07' {
+                            break;
+                        }
+                        if next == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                } else {
+                    // Lone escape character - escape as printable literal
+                    out.push_str(r"\x1b");
+                }
+            }
+            // Newlines and carriage returns: convert to space to prevent terminal line spoofing
+            '\r' | '\n' => {
+                out.push(' ');
+            }
+            // Tabs: convert to single space
+            '\t' => {
+                out.push(' ');
+            }
+            // BiDi formatting controls and zero-width spaces: omit to prevent reverse spoofing
+            c if is_bidi_or_formatting_control(c) => {}
+            // C0/C1 control characters: escape or replace
+            c if c.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(out, r"\u{{{:04x}}}", c as u32);
+            }
+            // Standard printable character
+            c => {
+                out.push(c);
+            }
+        }
+    }
+
+    out
+}
+
 /// Truncates a string to fit within a specified maximum terminal column display width.
 ///
 /// If the text exceeds `max_width`, it is truncated and `ellipsis` is appended such
@@ -55,6 +130,12 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str) -> String
     let mut result = String::new();
 
     for g in text.graphemes(true) {
+        // Skip zero-width control / bidi graphemes so they are not copied (H-23)
+        if g.chars()
+            .all(|c| c.is_control() || is_bidi_or_formatting_control(c))
+        {
+            continue;
+        }
         let gw = UnicodeWidthStr::width(g);
         if accumulated_width + gw > available_content_width {
             break;
@@ -68,9 +149,10 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str) -> String
 }
 
 /// Convenience wrapper that truncates `text` to fit within `max_width` terminal columns
-/// using the standard `"..."` ellipsis.
+/// using the standard `"..."` ellipsis, with terminal-safe escaping applied (H-23).
 pub fn truncate_str(text: &str, max_width: usize) -> String {
-    truncate_to_width(text, max_width, DEFAULT_ELLIPSIS)
+    let safe_text = escape_terminal_safe(text);
+    truncate_to_width(&safe_text, max_width, DEFAULT_ELLIPSIS)
 }
 
 /// Truncates a string based on user-perceived grapheme cluster count rather than terminal column width.

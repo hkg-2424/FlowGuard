@@ -43,6 +43,7 @@ pub struct ActivityWatchAdapter {
     server_info: Option<ServerInfo>,
     buckets: Option<DiscoveredBuckets>,
     health: SourceHealth,
+    last_discovery_retry: Option<std::time::Instant>,
 }
 
 impl ActivityWatchAdapter {
@@ -60,6 +61,7 @@ impl ActivityWatchAdapter {
             server_info: None,
             buckets: None,
             health: SourceHealth::Connecting,
+            last_discovery_retry: None,
         }
     }
 
@@ -162,6 +164,41 @@ impl ActivitySource for ActivityWatchAdapter {
             if let Err(e) = self.perform_connection() {
                 let diagnostics = vec![format!("Failed to connect to ActivityWatch: {}", e)];
                 return Ok(ActivityObservation::disconnected(self.health, diagnostics));
+            }
+        }
+
+        // Periodic watcher rediscovery when degraded to discover late-starting watchers (H-03)
+        let has_missing_watchers = self
+            .buckets
+            .as_ref()
+            .map(|b| {
+                !b.has_essential_window_bucket() || b.afk_bucket.is_none() || b.web_bucket.is_none()
+            })
+            .unwrap_or(false);
+
+        if self.health == SourceHealth::Degraded && has_missing_watchers {
+            let retry_interval =
+                std::time::Duration::from_secs(self.config.reconnect_interval_secs);
+            let should_retry = self
+                .last_discovery_retry
+                .map(|t| t.elapsed() >= retry_interval)
+                .unwrap_or(true);
+
+            if should_retry {
+                self.last_discovery_retry = Some(std::time::Instant::now());
+                if let Ok(all_buckets) = self.client.get_buckets() {
+                    let hostname = self
+                        .server_info
+                        .as_ref()
+                        .map(|s| s.hostname.as_str())
+                        .unwrap_or("");
+                    let new_discovered = discover_buckets(
+                        &all_buckets,
+                        hostname,
+                        self.config.bucket_overrides.as_ref(),
+                    );
+                    self.buckets = Some(new_discovered);
+                }
             }
         }
 
@@ -289,13 +326,18 @@ impl ActivitySource for ActivityWatchAdapter {
     fn diagnose(&mut self) -> Result<DiagnosticReport, SourceError> {
         let endpoint = self.config.base_url.clone();
 
-        // Ensure connected
-        if !self.health.is_operational() || self.buckets.is_none() {
-            if let Err(e) = self.perform_connection() {
+        // Always perform a fresh handshake probe to avoid certifying a stopped or replaced server (H-07)
+        let info = match self.client.handshake() {
+            Ok(server_info) => {
+                self.server_info = Some(server_info.clone());
+                server_info
+            }
+            Err(e) => {
                 let health = match &e {
                     SourceError::WrongService { .. } => SourceHealth::WrongService,
                     _ => SourceHealth::Disconnected,
                 };
+                self.health = health;
                 return Ok(DiagnosticReport::unreachable(
                     "ActivityWatch",
                     endpoint,
@@ -303,20 +345,31 @@ impl ActivitySource for ActivityWatchAdapter {
                     format!("Failed to connect to ActivityWatch: {}", e),
                 ));
             }
-        }
+        };
 
-        let info = self.server_info.as_ref().cloned();
-        let buckets = match self.buckets.as_ref() {
-            Some(b) => b.clone(),
-            None => {
+        // Always fetch fresh bucket list from server
+        let all_buckets = match self.client.get_buckets() {
+            Ok(b) => b,
+            Err(e) => {
+                self.health = SourceHealth::Disconnected;
                 return Ok(DiagnosticReport::unreachable(
                     "ActivityWatch",
                     endpoint,
                     SourceHealth::Disconnected,
-                    "No buckets discovered.".to_string(),
+                    format!(
+                        "Connected to server, but failed to retrieve bucket list: {}",
+                        e
+                    ),
                 ));
             }
         };
+
+        let buckets = discover_buckets(
+            &all_buckets,
+            &info.hostname,
+            self.config.bucket_overrides.as_ref(),
+        );
+        self.buckets = Some(buckets.clone());
 
         let now = chrono::Utc::now();
         let mut subsystems = Vec::new();
@@ -545,7 +598,10 @@ impl ActivitySource for ActivityWatchAdapter {
             SourceHealth::Degraded
         };
 
-        let is_testing = info.as_ref().map(|i| i.testing).unwrap_or(false);
+        // Update adapter state with calculated doctor health (H-07)
+        self.health = overall_health;
+
+        let is_testing = info.testing;
         if is_testing {
             doctor_diagnostics
                 .push("Notice: ActivityWatch server is running in testing/dev mode.".to_string());
@@ -556,10 +612,10 @@ impl ActivitySource for ActivityWatchAdapter {
             endpoint,
             is_reachable: true,
             service_identity: Some("ActivityWatch".to_string()),
-            server_version: info.as_ref().map(|i| i.version.clone()),
-            hostname: info.as_ref().map(|i| i.hostname.clone()),
+            server_version: Some(info.version),
+            hostname: Some(info.hostname),
             is_testing,
-            server_profile: info.as_ref().and_then(|i| i.profile.clone()),
+            server_profile: info.profile,
             subsystems,
             capabilities: buckets.capabilities.clone(),
             health: overall_health,

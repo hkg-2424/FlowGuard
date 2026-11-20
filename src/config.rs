@@ -63,6 +63,9 @@ pub struct ActivityWatchConfig {
     pub afk_timeout_secs: u64,
     /// Environment variable name holding the optional API key (default: FLOWGUARD_ACTIVITYWATCH_API_KEY).
     pub api_key_env: Option<String>,
+    /// Whether to allow remote (non-loopback) ActivityWatch hosts. Default: false.
+    #[serde(default)]
+    pub allow_remote: bool,
     /// Optional overrides for specific bucket IDs.
     pub bucket_overrides: Option<BucketOverridesConfig>,
 }
@@ -77,6 +80,7 @@ impl Default for ActivityWatchConfig {
             stale_after_secs: 15,
             afk_timeout_secs: 180,
             api_key_env: Some("FLOWGUARD_ACTIVITYWATCH_API_KEY".to_string()),
+            allow_remote: false,
             bucket_overrides: None,
         }
     }
@@ -95,11 +99,70 @@ impl FlowGuardConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         let aw = &self.activity_source.activitywatch;
 
-        if !aw.base_url.starts_with("http://") && !aw.base_url.starts_with("https://") {
+        // Structural URL validation (H-01)
+        let parsed_url = url::Url::parse(&aw.base_url).map_err(|e| {
+            ConfigError::ValidationError(format!("Invalid base_url '{}': {}", aw.base_url, e))
+        })?;
+
+        if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
             return Err(ConfigError::ValidationError(format!(
-                "Invalid base_url '{}'. Must begin with 'http://' or 'https://'",
+                "Invalid base_url '{}'. Scheme must be 'http' or 'https'",
                 aw.base_url
             )));
+        }
+
+        if !parsed_url.username().is_empty() || parsed_url.password().is_some() {
+            return Err(ConfigError::ValidationError(format!(
+                "Invalid base_url '{}': URL userinfo (username/password) is prohibited",
+                aw.base_url
+            )));
+        }
+
+        if parsed_url.query().is_some() {
+            return Err(ConfigError::ValidationError(format!(
+                "Invalid base_url '{}': query parameters are prohibited in base_url",
+                aw.base_url
+            )));
+        }
+
+        if parsed_url.fragment().is_some() {
+            return Err(ConfigError::ValidationError(format!(
+                "Invalid base_url '{}': URL fragments are prohibited in base_url",
+                aw.base_url
+            )));
+        }
+
+        let host = parsed_url.host().ok_or_else(|| {
+            ConfigError::ValidationError(format!(
+                "Invalid base_url '{}': host component is required",
+                aw.base_url
+            ))
+        })?;
+
+        let is_loopback = match host {
+            url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+            url::Host::Ipv4(ip) => ip.is_loopback(),
+            url::Host::Ipv6(ip) => ip.is_loopback(),
+        };
+
+        if !is_loopback && !aw.allow_remote {
+            return Err(ConfigError::ValidationError(format!(
+                "Invalid base_url '{}': remote ActivityWatch hosts are rejected by default. Set 'allow_remote = true' to opt in.",
+                aw.base_url
+            )));
+        }
+
+        if let Some(ref env_name) = aw.api_key_env {
+            let upper = env_name.to_ascii_uppercase();
+            if !upper.starts_with("FLOWGUARD_")
+                && !upper.starts_with("AW_")
+                && !upper.starts_with("ACTIVITYWATCH_")
+            {
+                return Err(ConfigError::ValidationError(format!(
+                    "Invalid api_key_env '{}': environment variable name must start with 'FLOWGUARD_', 'AW_', or 'ACTIVITYWATCH_'",
+                    env_name
+                )));
+            }
         }
 
         if aw.poll_interval_ms < 100 {

@@ -18,6 +18,7 @@ fn make_config(base_url: &str) -> ActivityWatchConfig {
         stale_after_secs: 15,
         afk_timeout_secs: 180,
         api_key_env: None,
+        allow_remote: false,
         bucket_overrides: None,
     }
 }

@@ -187,18 +187,31 @@ where
         return None;
     }
 
-    // Separate buckets matching local hostname from other hosts
+    // Require same-host match for automatic bucket discovery (H-02)
     let same_host: Vec<&BucketMetadata> = matching
         .iter()
         .copied()
         .filter(|b| b.hostname.eq_ignore_ascii_case(server_hostname))
         .collect();
 
-    let candidates = if !same_host.is_empty() {
-        same_host
-    } else {
-        matching
-    };
+    if same_host.is_empty() {
+        let foreign_candidates: Vec<String> = matching
+            .iter()
+            .map(|b| format!("'{}' (host: '{}')", b.id, b.hostname))
+            .collect();
+        let warning = format!(
+            "Foreign bucket rejection (H-02): Found {} candidates for {} from other machines [{}], but none matching local hostname '{}'. Foreign buckets are rejected for local foreground tracking without an explicit bucket override.",
+            matching.len(),
+            category,
+            foreign_candidates.join(", "),
+            server_hostname
+        );
+        warn!("{}", warning);
+        diagnostics.push(warning);
+        return None;
+    }
+
+    let candidates = same_host;
 
     // Exactly one candidate found
     if candidates.len() == 1 {

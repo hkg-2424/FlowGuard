@@ -44,6 +44,8 @@ impl ActivityWatchClient {
 
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| {
                 SourceError::Other(format!(

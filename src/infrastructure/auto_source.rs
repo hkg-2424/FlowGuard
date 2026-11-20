@@ -24,17 +24,22 @@ pub struct AutoSourceAdapter {
     native: NativeWindowsAdapter,
     active_backend: ActiveBackend,
     fallback_active: bool,
+    reconnect_interval: std::time::Duration,
+    last_recovery_attempt: Option<std::time::Instant>,
 }
 
 impl AutoSourceAdapter {
     /// Creates a new `AutoSourceAdapter` with ActivityWatch as primary and Native Windows as fallback.
     pub fn new(aw_config: ActivityWatchConfig) -> Self {
+        let reconnect_secs = aw_config.reconnect_interval_secs;
         let afk_timeout = aw_config.afk_timeout_secs;
         Self {
             activitywatch: ActivityWatchAdapter::new(aw_config),
             native: NativeWindowsAdapter::new(afk_timeout),
             active_backend: ActiveBackend::ActivityWatch,
             fallback_active: false,
+            reconnect_interval: std::time::Duration::from_secs(reconnect_secs),
+            last_recovery_attempt: None,
         }
     }
 
@@ -65,15 +70,25 @@ impl ActivitySource for AutoSourceAdapter {
             Ok(caps) => {
                 self.active_backend = ActiveBackend::ActivityWatch;
                 self.fallback_active = false;
+                self.last_recovery_attempt = None;
                 Ok(caps)
             }
             Err(err) => {
+                // If the error is an authentication error or wrong service, do not silently swallow (H-05)
+                match &err {
+                    SourceError::AuthRequired(_) | SourceError::WrongService { .. } => {
+                        return Err(err);
+                    }
+                    _ => {}
+                }
+
                 info!(
                     "ActivityWatch unavailable on connect ({}). Falling back to Native Windows observer.",
                     err
                 );
                 self.active_backend = ActiveBackend::NativeWindows;
                 self.fallback_active = true;
+                self.last_recovery_attempt = Some(std::time::Instant::now());
 
                 let mut caps = self.native.connect()?;
                 // Preserve note of fallback in provider string if helpful, or keep clean
@@ -92,6 +107,7 @@ impl ActivitySource for AutoSourceAdapter {
                         debug!("ActivityWatch disconnected during poll. Falling back to Native Windows.");
                         self.active_backend = ActiveBackend::NativeWindows;
                         self.fallback_active = true;
+                        self.last_recovery_attempt = Some(std::time::Instant::now());
                         let mut native_obs = self.native.poll()?;
                         native_obs.diagnostics.push(
                             "ActivityWatch disconnected; automatically switched to Native Windows observer."
@@ -108,6 +124,7 @@ impl ActivitySource for AutoSourceAdapter {
                     );
                     self.active_backend = ActiveBackend::NativeWindows;
                     self.fallback_active = true;
+                    self.last_recovery_attempt = Some(std::time::Instant::now());
                     let mut native_obs = self.native.poll()?;
                     native_obs.diagnostics.push(format!(
                         "ActivityWatch error ({}). Seamlessly operating via Native Windows observer.",
@@ -117,6 +134,29 @@ impl ActivitySource for AutoSourceAdapter {
                 }
             }
         } else {
+            // Periodic recovery check back to ActivityWatch when in fallback mode (H-04)
+            if self.fallback_active {
+                let should_probe = self
+                    .last_recovery_attempt
+                    .map(|last| last.elapsed() >= self.reconnect_interval)
+                    .unwrap_or(true);
+
+                if should_probe {
+                    self.last_recovery_attempt = Some(std::time::Instant::now());
+                    match self.activitywatch.poll() {
+                        Ok(aw_obs) if aw_obs.source_health.is_operational() => {
+                            info!("ActivityWatch has recovered and is operational. Switching active backend back to ActivityWatch.");
+                            self.active_backend = ActiveBackend::ActivityWatch;
+                            self.fallback_active = false;
+                            return Ok(aw_obs);
+                        }
+                        _ => {
+                            debug!("ActivityWatch recovery probe: server still not operational, continuing on Native Windows.");
+                        }
+                    }
+                }
+            }
+
             self.native.poll()
         }
     }
@@ -133,21 +173,33 @@ impl ActivitySource for AutoSourceAdapter {
         let aw_report = self.activitywatch.diagnose();
 
         match aw_report {
-            Ok(report) if report.is_reachable => {
+            Ok(report) if report.is_reachable && report.health.is_operational() => {
                 self.active_backend = ActiveBackend::ActivityWatch;
                 self.fallback_active = false;
                 Ok(report)
             }
             Ok(unreachable_report) => {
-                // ActivityWatch unreachable — diagnose native windows
+                // ActivityWatch unreachable or wrong service — diagnose native windows
                 self.active_backend = ActiveBackend::NativeWindows;
                 self.fallback_active = true;
 
                 let mut native_report = self.native.diagnose()?;
-                native_report.diagnostics.push(format!(
-                    "ActivityWatch is not running at {} (connection refused or stopped). FlowGuard has seamlessly fallen back to the Native Windows observer (Win32 APIs).",
-                    unreachable_report.endpoint
-                ));
+                if unreachable_report.health == SourceHealth::WrongService {
+                    native_report.diagnostics.push(format!(
+                        "ActivityWatch port collision at {}: another service is occupying this port. Operating via Native Windows observer.",
+                        unreachable_report.endpoint
+                    ));
+                } else {
+                    native_report.diagnostics.push(format!(
+                        "ActivityWatch is not running at {} (connection refused or stopped). FlowGuard has seamlessly fallen back to the Native Windows observer (Win32 APIs).",
+                        unreachable_report.endpoint
+                    ));
+                }
+                for d in unreachable_report.diagnostics {
+                    if !native_report.diagnostics.contains(&d) {
+                        native_report.diagnostics.push(d);
+                    }
+                }
                 Ok(native_report)
             }
             Err(err) => {
@@ -155,10 +207,26 @@ impl ActivitySource for AutoSourceAdapter {
                 self.fallback_active = true;
 
                 let mut native_report = self.native.diagnose()?;
-                native_report.diagnostics.push(format!(
-                    "ActivityWatch diagnostic error ({}). Operating via Native Windows observer.",
-                    err
-                ));
+                match &err {
+                    SourceError::AuthRequired(endpoint) => {
+                        native_report.diagnostics.push(format!(
+                            "ActivityWatch at '{}' requires authentication: {}. Operating via Native Windows observer.",
+                            endpoint, err
+                        ));
+                    }
+                    SourceError::WrongService { endpoint, reason } => {
+                        native_report.diagnostics.push(format!(
+                            "ActivityWatch at '{}' encountered wrong service: {}. Operating via Native Windows observer.",
+                            endpoint, reason
+                        ));
+                    }
+                    _ => {
+                        native_report.diagnostics.push(format!(
+                            "ActivityWatch diagnostic error ({}). Operating via Native Windows observer.",
+                            err
+                        ));
+                    }
+                }
                 Ok(native_report)
             }
         }

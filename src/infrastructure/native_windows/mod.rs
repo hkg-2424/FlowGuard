@@ -44,12 +44,25 @@ impl NativeWindowsAdapter {
 
     /// Returns the active capabilities supported by native Windows observation.
     pub fn native_capabilities() -> ActivityCapabilities {
-        ActivityCapabilities {
-            application_tracking: true,
-            window_title_tracking: true,
-            idle_tracking: true,
-            browser_url_tracking: false,
-            incognito_detection: false,
+        #[cfg(target_os = "windows")]
+        {
+            ActivityCapabilities {
+                application_tracking: true,
+                window_title_tracking: true,
+                idle_tracking: true,
+                browser_url_tracking: false,
+                incognito_detection: false,
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            ActivityCapabilities {
+                application_tracking: false,
+                window_title_tracking: false,
+                idle_tracking: false,
+                browser_url_tracking: false,
+                incognito_detection: false,
+            }
         }
     }
 }
@@ -62,43 +75,128 @@ impl Default for NativeWindowsAdapter {
 
 impl ActivitySource for NativeWindowsAdapter {
     fn connect(&mut self) -> Result<SourceCapabilities, SourceError> {
-        self.health = SourceHealth::Connected;
-        info!("Connected to Native Windows Activity Observer (Win32 Subsystem)");
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.health = SourceHealth::Disconnected;
+            return Err(SourceError::Other(
+                "NativeWindowsAdapter is only supported on Windows operating systems".to_string(),
+            ));
+        }
 
-        Ok(SourceCapabilities {
-            provider: "native_windows".to_string(),
-            server_version: Some(api::get_os_environment_info()),
-            hostname: api::get_local_hostname(),
-            is_testing: false,
-            capabilities: Self::native_capabilities(),
-        })
+        #[cfg(target_os = "windows")]
+        {
+            let (app, title) = api::get_foreground_window_info();
+            let (idle_state, _) = api::get_idle_state(self.afk_timeout_secs);
+
+            let idle_ok = idle_state != IdleState::Unknown;
+            let window_ok =
+                app.is_some() || title.is_some() || api::is_window_subsystem_available();
+
+            if !idle_ok && !window_ok {
+                self.health = SourceHealth::Disconnected;
+                return Err(SourceError::Other(
+                    "Failed to probe Win32 subsystem APIs (neither window nor idle observation available)".to_string(),
+                ));
+            }
+
+            self.health = if idle_ok && (app.is_some() || title.is_some() || window_ok) {
+                SourceHealth::Connected
+            } else {
+                SourceHealth::Degraded
+            };
+
+            info!(
+                "Connected to Native Windows Activity Observer (Win32 Subsystem, health: {:?})",
+                self.health
+            );
+
+            let caps = ActivityCapabilities {
+                application_tracking: window_ok,
+                window_title_tracking: window_ok,
+                idle_tracking: idle_ok,
+                browser_url_tracking: false,
+                incognito_detection: false,
+            };
+
+            Ok(SourceCapabilities {
+                provider: "native_windows".to_string(),
+                server_version: Some(api::get_os_environment_info()),
+                hostname: api::get_local_hostname(),
+                is_testing: false,
+                capabilities: caps,
+            })
+        }
     }
 
     fn poll(&mut self) -> Result<ActivityObservation, SourceError> {
-        self.health = SourceHealth::Connected;
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.health = SourceHealth::Disconnected;
+            return Ok(ActivityObservation::unreachable(
+                "native_windows",
+                "NativeWindowsAdapter is only supported on Windows".to_string(),
+            ));
+        }
 
-        let (application, window_title) = api::get_foreground_window_info();
-        let (idle_state, _) = api::get_idle_state(self.afk_timeout_secs);
+        #[cfg(target_os = "windows")]
+        {
+            let window_ok = api::is_window_subsystem_available();
+            let (application, window_title) = api::get_foreground_window_info();
+            let (idle_state, _) = api::get_idle_state(self.afk_timeout_secs);
 
-        let idle_freshness = if idle_state != IdleState::Unknown {
-            FreshnessState::Fresh
-        } else {
-            FreshnessState::Missing
-        };
+            let idle_ok = idle_state != IdleState::Unknown;
 
-        Ok(ActivityObservation {
-            observed_at: Utc::now(),
-            application,
-            window_title,
-            browser: None,
-            idle_state,
-            capabilities: Self::native_capabilities(),
-            source_health: self.health,
-            window_freshness: FreshnessState::Fresh,
-            idle_freshness,
-            browser_freshness: FreshnessState::Missing,
-            diagnostics: Vec::new(),
-        })
+            let window_freshness = if window_ok {
+                FreshnessState::Fresh
+            } else {
+                FreshnessState::Missing
+            };
+
+            let idle_freshness = if idle_ok {
+                FreshnessState::Fresh
+            } else {
+                FreshnessState::Missing
+            };
+
+            let health = match (window_freshness, idle_freshness) {
+                (FreshnessState::Fresh, FreshnessState::Fresh) => SourceHealth::Connected,
+                (FreshnessState::Fresh, _) | (_, FreshnessState::Fresh) => SourceHealth::Degraded,
+                _ => SourceHealth::Disconnected,
+            };
+            self.health = health;
+
+            let caps = ActivityCapabilities {
+                application_tracking: window_ok,
+                window_title_tracking: window_ok,
+                idle_tracking: idle_ok,
+                browser_url_tracking: false,
+                incognito_detection: false,
+            };
+
+            let mut diagnostics = Vec::new();
+            if !window_ok {
+                diagnostics.push("Win32 window observation subsystem unavailable.".to_string());
+            } else if application.is_none() && window_title.is_none() {
+                diagnostics.push("No active foreground window observed (desktop, lock screen, or protected window).".to_string());
+            }
+            if !idle_ok {
+                diagnostics.push("User idle acquisition failed via GetLastInputInfo.".to_string());
+            }
+
+            Ok(ActivityObservation {
+                observed_at: Utc::now(),
+                application,
+                window_title,
+                browser: None,
+                idle_state,
+                capabilities: caps,
+                source_health: self.health,
+                window_freshness,
+                idle_freshness,
+                browser_freshness: FreshnessState::Missing,
+                diagnostics,
+            })
+        }
     }
 
     fn health(&self) -> SourceHealth {
@@ -106,55 +204,130 @@ impl ActivitySource for NativeWindowsAdapter {
     }
 
     fn diagnose(&mut self) -> Result<DiagnosticReport, SourceError> {
-        let (current_app, current_title) = api::get_foreground_window_info();
-        let (idle_state, idle_secs) = api::get_idle_state(self.afk_timeout_secs);
-        let idle_s = idle_secs.unwrap_or(0);
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.health = SourceHealth::Disconnected;
+            return Ok(DiagnosticReport::unreachable(
+                "NativeWindows",
+                "Win32 Subsystem",
+                SourceHealth::Disconnected,
+                "NativeWindows adapter is only supported on Windows operating systems.".to_string(),
+            ));
+        }
 
-        let window_details = match (&current_app, &current_title) {
-            (Some(app), Some(title)) => format!("Foreground active: [{}] \"{}\"", app, title),
-            (Some(app), None) => format!("Foreground active: [{}] (no window title)", app),
-            (None, _) => "No foreground window active (desktop or lock screen)".to_string(),
-        };
+        #[cfg(target_os = "windows")]
+        {
+            let window_ok = api::is_window_subsystem_available();
+            let (current_app, current_title) = api::get_foreground_window_info();
+            let (idle_state, idle_secs) = api::get_idle_state(self.afk_timeout_secs);
+            let idle_s = idle_secs.unwrap_or(0);
+            let idle_ok = idle_state != IdleState::Unknown;
 
-        let idle_details = format!(
-            "Tick counter active. Current idle duration: {}s (State: {:?}, AFK threshold: {}s)",
-            idle_s, idle_state, self.afk_timeout_secs
-        );
+            let (window_status, window_freshness, window_details) = if !window_ok {
+                (
+                    SubsystemStatus::Unavailable,
+                    FreshnessState::Missing,
+                    "Win32 window observation subsystem unavailable".to_string(),
+                )
+            } else {
+                match (&current_app, &current_title) {
+                    (Some(app), Some(title)) => (
+                        SubsystemStatus::Healthy,
+                        FreshnessState::Fresh,
+                        format!("Foreground active: [{}] \"{}\"", app, title),
+                    ),
+                    (Some(app), None) => (
+                        SubsystemStatus::Healthy,
+                        FreshnessState::Fresh,
+                        format!("Foreground active: [{}] (no window title)", app),
+                    ),
+                    (None, _) => (
+                        SubsystemStatus::Healthy,
+                        FreshnessState::Fresh,
+                        "Foreground window idle or absent (desktop, lock screen, or protected window)".to_string(),
+                    ),
+                }
+            };
 
-        let subsystems = vec![
-            SubsystemDiagnostic {
-                name: "Active Window Poller".to_string(),
-                target: Some("GetForegroundWindow / QueryFullProcessImageNameW".to_string()),
-                status: SubsystemStatus::Healthy,
-                freshness: Some(FreshnessState::Fresh),
-                age_seconds: Some(0),
-                details: window_details,
-            },
-            SubsystemDiagnostic {
-                name: "User Idle Detection".to_string(),
-                target: Some("GetLastInputInfo".to_string()),
-                status: SubsystemStatus::Healthy,
-                freshness: Some(FreshnessState::Fresh),
-                age_seconds: Some(idle_s as i64),
-                details: idle_details,
-            },
-        ];
+            let (idle_status, idle_freshness, idle_details) = if idle_ok {
+                (
+                    SubsystemStatus::Healthy,
+                    FreshnessState::Fresh,
+                    format!(
+                        "Tick counter active. Current idle duration: {}s (State: {:?}, AFK threshold: {}s)",
+                        idle_s, idle_state, self.afk_timeout_secs
+                    ),
+                )
+            } else {
+                (
+                    SubsystemStatus::Degraded,
+                    FreshnessState::Missing,
+                    "GetLastInputInfo failed or unavailable".to_string(),
+                )
+            };
 
-        self.health = SourceHealth::Connected;
+            let subsystems = vec![
+                SubsystemDiagnostic {
+                    name: "Active Window Poller".to_string(),
+                    target: Some("GetForegroundWindow / QueryFullProcessImageNameW".to_string()),
+                    status: window_status,
+                    freshness: Some(window_freshness),
+                    age_seconds: Some(0),
+                    details: window_details,
+                },
+                SubsystemDiagnostic {
+                    name: "User Idle Detection".to_string(),
+                    target: Some("GetLastInputInfo".to_string()),
+                    status: idle_status,
+                    freshness: Some(idle_freshness),
+                    age_seconds: Some(idle_s as i64),
+                    details: idle_details,
+                },
+            ];
 
-        Ok(DiagnosticReport {
-            provider_name: "NativeWindows".to_string(),
-            endpoint: "Win32 Subsystem (User32 / Kernel32)".to_string(),
-            is_reachable: true,
-            service_identity: Some("NativeWindows".to_string()),
-            server_version: Some(api::get_os_environment_info()),
-            hostname: api::get_local_hostname(),
-            is_testing: false,
-            server_profile: None,
-            subsystems,
-            capabilities: Self::native_capabilities(),
-            health: SourceHealth::Connected,
-            diagnostics: Vec::new(),
-        })
+            let overall_health = match (window_status, idle_status) {
+                (SubsystemStatus::Healthy, SubsystemStatus::Healthy) => SourceHealth::Connected,
+                (SubsystemStatus::Healthy, _) | (_, SubsystemStatus::Healthy) => {
+                    SourceHealth::Degraded
+                }
+                _ => SourceHealth::Disconnected,
+            };
+
+            self.health = overall_health;
+
+            let derived_caps = ActivityCapabilities {
+                application_tracking: window_ok,
+                window_title_tracking: window_ok,
+                idle_tracking: idle_ok,
+                browser_url_tracking: false,
+                incognito_detection: false,
+            };
+
+            let mut diagnostics = Vec::new();
+            if !window_ok {
+                diagnostics.push("Window watcher: subsystem unavailable.".to_string());
+            } else if current_app.is_none() && current_title.is_none() {
+                diagnostics
+                    .push("Window watcher: foreground window absent or protected.".to_string());
+            }
+            if !idle_ok {
+                diagnostics.push("Idle watcher: GetLastInputInfo unavailable.".to_string());
+            }
+
+            Ok(DiagnosticReport {
+                provider_name: "NativeWindows".to_string(),
+                endpoint: "Win32 Subsystem (User32 / Kernel32)".to_string(),
+                is_reachable: window_ok || idle_ok,
+                service_identity: Some("NativeWindows".to_string()),
+                server_version: Some(api::get_os_environment_info()),
+                hostname: api::get_local_hostname(),
+                is_testing: false,
+                server_profile: None,
+                subsystems,
+                capabilities: derived_caps,
+                health: overall_health,
+                diagnostics,
+            })
+        }
     }
 }

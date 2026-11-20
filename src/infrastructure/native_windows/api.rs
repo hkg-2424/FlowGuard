@@ -308,9 +308,22 @@ pub fn friendly_display_name(app_name: &str, window_title: &str) -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn is_window_subsystem_available() -> bool {
+    unsafe {
+        let _ = win32::GetForegroundWindow();
+        true
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Non-Windows fallbacks (for compiling on Linux/macOS in CI/mock environments)
 // ----------------------------------------------------------------------------
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_window_subsystem_available() -> bool {
+    false
+}
 
 #[cfg(not(target_os = "windows"))]
 pub fn list_running_applications() -> Vec<RunningAppInfo> {
