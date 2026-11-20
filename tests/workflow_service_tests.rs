@@ -272,8 +272,14 @@ fn test_ws02_cancellation_contracts() {
         SessionState::Active
     );
 
-    // Can still naturally complete
-    service.complete_session().unwrap();
+    // C-02: Public completion bypassing commitment contracts before target duration is strictly rejected
+    let early_complete = service.complete_session();
+    assert!(matches!(
+        early_complete,
+        Err(WorkflowServiceError::Session(
+            SessionError::CannotBreakUnbreakableWorkflow
+        ))
+    ));
 }
 
 #[test]

@@ -180,57 +180,68 @@ pub fn is_browser_app(app_name: &str) -> bool {
 /// Identifies algorithmic short-form video feeds (YouTube Shorts, Instagram Reels, TikTok)
 /// across browser URLs and native window titles.
 pub fn is_short_form_media(observation: &ActivityObservation) -> bool {
-    let url_lower = observation
-        .browser
-        .as_ref()
-        .and_then(|b| b.url.as_deref())
-        .unwrap_or("")
-        .to_lowercase();
-    let title_lower = observation
-        .window_title
-        .as_deref()
-        .unwrap_or("")
-        .to_lowercase();
+    let url_opt = observation.browser.as_ref().and_then(|b| b.url.as_deref());
 
-    // 1. Explicit URL routes
-    if url_lower.contains("/shorts/")
-        || url_lower.contains("instagram.com/reels/")
-        || url_lower.contains("instagram.com/reel/")
-        || url_lower.contains("tiktok.com")
-    {
-        return true;
+    if let Some(u) = url_opt {
+        if let Ok(parsed) = Url::parse(u) {
+            let host = parsed.host_str().unwrap_or("").to_lowercase();
+            let path = parsed.path().to_lowercase();
+
+            // 1. TikTok
+            if host == "tiktok.com" || host.ends_with(".tiktok.com") {
+                return true;
+            }
+            // 2. Instagram Reels
+            if (host == "instagram.com" || host.ends_with(".instagram.com"))
+                && (path.starts_with("/reels/") || path.starts_with("/reel/"))
+            {
+                return true;
+            }
+            // 3. YouTube Shorts
+            if (host == "youtube.com" || host.ends_with(".youtube.com"))
+                && path.starts_with("/shorts/")
+            {
+                return true;
+            }
+        }
     }
 
-    // 2. Video platform hashtag and title markers
-    let is_media_platform = title_lower.contains("youtube")
-        || title_lower.contains("instagram")
-        || title_lower.contains("tiktok")
-        || url_lower.contains("youtube.com")
-        || url_lower.contains("instagram.com")
-        || url_lower.contains("tiktok.com");
+    // 2. Video platform hashtag and title markers for browser windows
+    let is_browser = observation
+        .application
+        .as_deref()
+        .map(is_browser_app)
+        .unwrap_or(false)
+        || observation.browser.is_some();
 
-    if is_media_platform {
-        let markers = [
-            "#shorts",
-            "#short",
-            "#ytshorts",
-            "#viralshort",
-            "#viralshorts",
-            "short video",
-            "shorts -",
-            " - shorts",
-            "/shorts",
-            "shorts",
-            "#reels",
-            "#reel",
-            "/reels",
-            "/reel",
-            "reels",
-            "tiktok",
-        ];
-        for m in &markers {
-            if title_lower.contains(m) {
-                return true;
+    if is_browser {
+        if let Some(title) = observation.window_title.as_deref() {
+            let title_lower = title.to_lowercase();
+            let is_media_platform = title_lower.contains("youtube")
+                || title_lower.contains("instagram")
+                || title_lower.contains("tiktok");
+
+            if is_media_platform {
+                let markers = [
+                    "#shorts",
+                    "#ytshorts",
+                    "#viralshort",
+                    "#viralshorts",
+                    "youtube shorts",
+                    "/shorts/",
+                    " - shorts",
+                    "#reels",
+                    "#reel",
+                    "instagram reels",
+                    "/reels/",
+                    " - reels",
+                    "tiktok",
+                ];
+                for m in &markers {
+                    if title_lower.contains(m) {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -322,6 +333,30 @@ impl RuleEngine {
         Self
     }
 
+    /// Evaluates whether a session has satisfied its commitment contract and target duration
+    /// to be eligible for natural completion (C-02, H-19).
+    pub fn can_complete(
+        &self,
+        session: &super::session::WorkflowSession,
+        workflow: &Workflow,
+    ) -> bool {
+        let active_focus = session.active_focus_seconds();
+        match &session.commitment_contract {
+            super::entities::CommitmentContract::Standard => true,
+            super::entities::CommitmentContract::AccountableBreakable { .. } => {
+                if let Some(target_mins) = workflow.target_duration_minutes {
+                    let target_secs = (target_mins as u64) * 60;
+                    active_focus >= target_secs
+                } else {
+                    true
+                }
+            }
+            super::entities::CommitmentContract::Unbreakable {
+                target_duration_seconds,
+            } => active_focus >= *target_duration_seconds,
+        }
+    }
+
     /// Evaluates an observation against a workflow, updating grace timers and producing
     /// a deterministic policy decision.
     pub fn evaluate(
@@ -331,11 +366,11 @@ impl RuleEngine {
         timer: &mut GracePeriodTimer,
         now: DateTime<Utc>,
     ) -> PolicyDecision {
-        // 1. Guard against stale or missing observations: Never penalize on uncertain data!
+        // 1. Guard against stale or missing observations: Never penalize on uncertain data! (H-24, H-25)
         if observation.window_freshness == FreshnessState::Stale
             || observation.window_freshness == FreshnessState::Missing
         {
-            timer.cancel();
+            timer.pause();
             return PolicyDecision::ObservationUnavailable {
                 reason: "Foreground window observation is stale or missing".to_string(),
             };
@@ -344,12 +379,20 @@ impl RuleEngine {
         let app_name = match observation.application.as_deref() {
             Some(a) => a,
             None => {
-                timer.cancel();
+                timer.pause();
                 return PolicyDecision::ObservationUnavailable {
                     reason: "No foreground application reported".to_string(),
                 };
             }
         };
+
+        // Gating on idle data freshness (H-25): Stale idle data pauses timer & policy
+        if observation.idle_freshness == FreshnessState::Stale {
+            timer.pause();
+            return PolicyDecision::ObservationUnavailable {
+                reason: "User idle state observation is stale".to_string(),
+            };
+        }
 
         // 2. Ignore transitory Windows system surfaces (lock screen, Alt-Tab, taskbar)
         let app_lower = app_name.to_lowercase();
@@ -367,6 +410,41 @@ impl RuleEngine {
             };
         }
 
+        // H-17: Neutral FlowGuard control surface (neither accumulates focus nor burns grace)
+        let is_flowguard_app = app_lower == "flowguard.exe" || app_lower == "flowguard";
+        let is_flowguard_title = observation
+            .window_title
+            .as_deref()
+            .map(|t| {
+                t.contains("FlowGuard — Focus")
+                    || t.contains("FlowGuard - Focus")
+                    || t.starts_with("FlowGuard")
+            })
+            .unwrap_or(false);
+        let is_flowguard_url = observation
+            .browser
+            .as_ref()
+            .and_then(|b| b.url.as_deref())
+            .map(|u| {
+                if let Ok(parsed) = Url::parse(u) {
+                    let host = parsed.host_str().unwrap_or("");
+                    (host == "127.0.0.1" || host == "localhost")
+                        && (parsed.port() == Some(5600)
+                            || parsed.port() == Some(8080)
+                            || parsed.port().is_some())
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
+        if is_flowguard_app || is_flowguard_title || is_flowguard_url {
+            timer.pause();
+            return PolicyDecision::Ignored {
+                reason: "FlowGuard control surface".to_string(),
+            };
+        }
+
         // 3. Principle 2: Do not mistake inactivity for distraction
         if observation.idle_state == IdleState::Afk {
             timer.pause();
@@ -375,50 +453,28 @@ impl RuleEngine {
             };
         }
 
-        // 4. Extract URL and Canonical Resource
-        let browser_url = observation.browser.as_ref().and_then(|b| b.url.as_deref());
-        let browser_host = browser_url
-            .and_then(|u| Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
-        let canonical_resource = browser_url.and_then(parse_canonical_resource);
+        // 4. Extract URL and Canonical Resource gated on browser freshness (H-25)
+        let (browser_url, browser_host, canonical_resource) =
+            if observation.browser_freshness == FreshnessState::Fresh {
+                let url = observation.browser.as_ref().and_then(|b| b.url.as_deref());
+                let host = url
+                    .and_then(|u| Url::parse(u).ok())
+                    .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+                let resource = url.and_then(parse_canonical_resource);
+                (url, host, resource)
+            } else if observation.browser_freshness == FreshnessState::Stale
+                && is_browser_app(&app_lower)
+            {
+                // Stale browser observation in a browser window pauses policy evaluation (H-25)
+                timer.pause();
+                return PolicyDecision::ObservationUnavailable {
+                    reason: "Browser tab observation is stale".to_string(),
+                };
+            } else {
+                (None, None, None)
+            };
 
-        // 4b. Restrict short-form algorithmic media (Shorts, Reels, TikTok) unless explicitly permitted
-        if is_short_form_media(observation) {
-            let target_name = browser_url.unwrap_or(app_name).to_string();
-            let shorts_rule_id = super::entities::RuleId::new("rule-restrict-shorts");
-            let grace_duration = workflow.default_grace_period_seconds;
-
-            match timer.tick(&shorts_rule_id, &target_name, grace_duration) {
-                TimerStatus::GracePeriod {
-                    remaining_seconds,
-                    total_grace_seconds,
-                } => {
-                    return PolicyDecision::GracePeriod {
-                        rule_id: shorts_rule_id,
-                        remaining_seconds,
-                        total_grace_seconds,
-                        target_name,
-                    };
-                }
-                TimerStatus::Expired { .. } => {
-                    return PolicyDecision::InterventionRequired {
-                        rule_id: shorts_rule_id,
-                        target_name,
-                        reason:
-                            "Short-form algorithmic media (Shorts/Reels) violates focus intention"
-                                .to_string(),
-                    };
-                }
-                TimerStatus::Idle => {
-                    return PolicyDecision::Allowed {
-                        rule_id: shorts_rule_id,
-                        scope: RuleScope::WorkflowDefault,
-                    };
-                }
-            }
-        }
-
-        // 5. Evaluate all active rules
+        // 5. Evaluate all active workflow rules
         let mut matching_rules: Vec<(&WorkflowRule, u32)> = Vec::new();
 
         for rule in &workflow.rules {
@@ -450,23 +506,40 @@ impl RuleEngine {
                     let is_match =
                         app_matches(&app_lower, observation.window_title.as_deref(), target_app);
                     if is_match && is_browser_app(&app_lower) {
-                        // If workflow specifies domain allow rules, an allowed browser container
-                        // must not bypass domain restrictions
-                        let has_domain_rules = workflow.rules.iter().any(|r| {
-                            r.is_active(now) && matches!(r.matcher, RuleMatcher::DomainPattern(_))
+                        // H-26: If workflow specifies active Allow domain rules, an allowed browser container
+                        // must not bypass domain restrictions. Only check explicitly active Allow domain rules!
+                        let has_active_allow_domain_rules = workflow.rules.iter().any(|r| {
+                            r.is_active(now)
+                                && r.effect == RuleEffect::Allow
+                                && matches!(
+                                    r.matcher,
+                                    RuleMatcher::DomainPattern(_)
+                                        | RuleMatcher::ExactUrl(_)
+                                        | RuleMatcher::Canonical(_)
+                                )
                         });
-                        if has_domain_rules {
+                        if has_active_allow_domain_rules {
                             let matches_domain = workflow.rules.iter().any(|r| {
-                                if let RuleMatcher::DomainPattern(pat) = &r.matcher {
-                                    if let Some(ref h) = browser_host {
-                                        domain_matches(h, pat)
-                                    } else if let Some(ref t) = observation.window_title {
-                                        title_matches_domain(t, pat)
-                                    } else {
-                                        false
+                                if !r.is_active(now) || r.effect != RuleEffect::Allow {
+                                    return false;
+                                }
+                                match &r.matcher {
+                                    RuleMatcher::DomainPattern(pat) => {
+                                        if let Some(ref h) = browser_host {
+                                            domain_matches(h, pat)
+                                        } else if let Some(ref t) = observation.window_title {
+                                            title_matches_domain(t, pat)
+                                        } else {
+                                            false
+                                        }
                                     }
-                                } else {
-                                    false
+                                    RuleMatcher::ExactUrl(target_url) => {
+                                        browser_url.map(|u| u == target_url).unwrap_or(false)
+                                    }
+                                    RuleMatcher::Canonical(target_res) => {
+                                        canonical_resource.as_ref() == Some(target_res)
+                                    }
+                                    _ => false,
                                 }
                             });
                             matches_domain
@@ -482,6 +555,55 @@ impl RuleEngine {
 
             if matches {
                 matching_rules.push((rule, rule.priority_weight));
+            }
+        }
+
+        // 5b. Short-form algorithmic media (Shorts, Reels, TikTok) with policy precedence (H-27)
+        let is_short_form = is_short_form_media(observation);
+        let has_explicit_allow_exception = if is_short_form {
+            matching_rules.iter().any(|(r, _)| {
+                r.effect == RuleEffect::Allow
+                    && matches!(
+                        r.matcher,
+                        RuleMatcher::Canonical(_) | RuleMatcher::ExactUrl(_)
+                    )
+            })
+        } else {
+            false
+        };
+
+        if is_short_form && !has_explicit_allow_exception {
+            let target_name = browser_url.unwrap_or(app_name).to_string();
+            let shorts_rule_id = super::entities::RuleId::new("rule-restrict-shorts");
+            let grace_duration = workflow.default_grace_period_seconds;
+
+            match timer.tick(&shorts_rule_id, &target_name, grace_duration) {
+                TimerStatus::GracePeriod {
+                    remaining_seconds,
+                    total_grace_seconds,
+                } => {
+                    return PolicyDecision::GracePeriod {
+                        rule_id: shorts_rule_id,
+                        remaining_seconds,
+                        total_grace_seconds,
+                        target_name,
+                    };
+                }
+                TimerStatus::Expired { .. } => {
+                    return PolicyDecision::InterventionRequired {
+                        rule_id: shorts_rule_id,
+                        target_name,
+                        reason:
+                            "Short-form algorithmic media (Shorts/Reels) violates focus intention"
+                                .to_string(),
+                    };
+                }
+                TimerStatus::Idle => {
+                    return PolicyDecision::Allowed {
+                        rule_id: shorts_rule_id,
+                        scope: RuleScope::WorkflowDefault,
+                    };
+                }
             }
         }
 

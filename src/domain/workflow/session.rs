@@ -135,14 +135,106 @@ impl WorkflowSession {
         Ok(())
     }
 
+    /// Authoritative active focus elapsed duration metric in seconds (H-19).
+    /// Strictly excludes paused time, AFK disengagement, and unallowed distraction.
+    pub fn active_focus_seconds(&self) -> u64 {
+        self.total_focus_seconds
+    }
+
     /// Transitions session to `Completed`.
+    ///
+    /// C-02 Enforcement:
+    /// - `Unbreakable` contracts reject early completion when active focus elapsed duration
+    ///   has not reached `target_duration_seconds`, unless an explicit Emergency Override is supplied.
+    /// - `AccountableBreakable` contracts enforce that early completion before target duration
+    ///   requires an emergency override reason satisfying `min_reason_characters`.
     pub fn complete(&mut self) -> Result<(), SessionError> {
+        self.complete_with_override(None)
+    }
+
+    /// Transitions session to `Completed` with an optional emergency override.
+    pub fn complete_with_override(
+        &mut self,
+        emergency_override: Option<&str>,
+    ) -> Result<(), SessionError> {
+        self.complete_with_contract_target(None, emergency_override)
+    }
+
+    /// Transitions session to `Completed` with an optional explicit target duration and emergency override.
+    pub fn complete_with_contract_target(
+        &mut self,
+        target_duration_seconds: Option<u64>,
+        emergency_override: Option<&str>,
+    ) -> Result<(), SessionError> {
         if self.state != SessionState::Active && self.state != SessionState::Paused {
             return Err(SessionError::InvalidTransition {
                 from: self.state,
                 to: SessionState::Completed,
             });
         }
+
+        let is_emergency = emergency_override
+            .map(|r| {
+                let trimmed = r.trim();
+                !trimmed.is_empty()
+            })
+            .unwrap_or(false);
+
+        match &self.commitment_contract {
+            CommitmentContract::Standard => {
+                if let Some(r) = emergency_override {
+                    let trimmed = r.trim();
+                    if !trimmed.is_empty() {
+                        self.early_exit_reason = Some(trimmed.to_string());
+                    }
+                }
+            }
+            CommitmentContract::AccountableBreakable {
+                min_reason_characters,
+            } => {
+                // If target duration is specified (e.g. from workflow) and has not elapsed:
+                if let Some(target) = target_duration_seconds {
+                    if self.total_focus_seconds < target {
+                        let reason = emergency_override.map(|s| s.trim()).unwrap_or("");
+                        let actual_chars = reason.chars().count() as u32;
+                        if actual_chars < *min_reason_characters {
+                            return Err(SessionError::InsufficientReason {
+                                min_chars: *min_reason_characters,
+                                actual_chars,
+                            });
+                        }
+                        self.early_exit_reason = Some(reason.to_string());
+                    }
+                } else if is_emergency {
+                    let reason = emergency_override.unwrap().trim();
+                    let actual_chars = reason.chars().count() as u32;
+                    if actual_chars < *min_reason_characters {
+                        return Err(SessionError::InsufficientReason {
+                            min_chars: *min_reason_characters,
+                            actual_chars,
+                        });
+                    }
+                    self.early_exit_reason = Some(reason.to_string());
+                }
+            }
+            CommitmentContract::Unbreakable {
+                target_duration_seconds: contract_target,
+            } => {
+                // Authoritative active focus check (H-19)
+                if self.total_focus_seconds < *contract_target {
+                    if let Some(r) = emergency_override {
+                        let reason = r.trim();
+                        if reason.is_empty() {
+                            return Err(SessionError::CannotBreakUnbreakableWorkflow);
+                        }
+                        self.early_exit_reason = Some(format!("EMERGENCY OVERRIDE: {reason}"));
+                    } else {
+                        return Err(SessionError::CannotBreakUnbreakableWorkflow);
+                    }
+                }
+            }
+        }
+
         self.state = SessionState::Completed;
         self.end_time = Some(Utc::now());
         Ok(())
@@ -177,16 +269,27 @@ impl WorkflowSession {
             CommitmentContract::Unbreakable {
                 target_duration_seconds,
             } => {
-                let active_elapsed = self.total_focus_seconds
-                    + self.total_grace_seconds
-                    + self.total_distraction_seconds
-                    + self.total_paused_seconds;
-                if active_elapsed >= *target_duration_seconds
-                    || self.duration_seconds(Utc::now()) >= *target_duration_seconds
-                {
+                // Authoritative active focus duration metric (H-19)
+                // Excludes paused time, AFK time, and distraction!
+                let active_elapsed = self.total_focus_seconds;
+                if active_elapsed >= *target_duration_seconds {
                     self.state = SessionState::Completed;
                     self.end_time = Some(Utc::now());
                     return Ok(());
+                } else if let Some(ref r) = reason {
+                    // Check for explicit emergency override during cancellation
+                    let r_trim = r.trim();
+                    if !r_trim.is_empty()
+                        && (r_trim.to_lowercase().contains("emergency")
+                            || r_trim.starts_with("EMERGENCY"))
+                    {
+                        self.early_exit_reason = Some(format!("EMERGENCY OVERRIDE: {r_trim}"));
+                        self.state = SessionState::Cancelled;
+                        self.end_time = Some(Utc::now());
+                        return Ok(());
+                    } else {
+                        return Err(SessionError::CannotBreakUnbreakableWorkflow);
+                    }
                 } else {
                     return Err(SessionError::CannotBreakUnbreakableWorkflow);
                 }
@@ -212,5 +315,111 @@ impl WorkflowSession {
             self.state = SessionState::Interrupted;
             self.end_time = Some(Utc::now());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unbreakable_prevents_early_complete_without_override() {
+        let mut session = WorkflowSession::new(
+            SessionId::new("test-sess"),
+            WorkflowId::new("wf-test"),
+            CommitmentContract::Unbreakable {
+                target_duration_seconds: 1800,
+            },
+        );
+        session.start().unwrap();
+
+        // 0 active focus seconds elapsed -> complete() must fail (C-02)
+        let err = session.complete().unwrap_err();
+        assert_eq!(err, SessionError::CannotBreakUnbreakableWorkflow);
+        assert_eq!(session.state, SessionState::Active);
+
+        // Even with wall-clock time elapsed, focus seconds must be authoritative (H-19)
+        session.total_grace_seconds = 300;
+        session.total_paused_seconds = 600;
+        session.total_distraction_seconds = 1000;
+        let err2 = session.complete().unwrap_err();
+        assert_eq!(err2, SessionError::CannotBreakUnbreakableWorkflow);
+
+        // Emergency override allows early completion
+        session
+            .complete_with_override(Some("Medical emergency"))
+            .unwrap();
+        assert_eq!(session.state, SessionState::Completed);
+        assert_eq!(
+            session.early_exit_reason,
+            Some("EMERGENCY OVERRIDE: Medical emergency".to_string())
+        );
+    }
+
+    #[test]
+    fn test_unbreakable_completes_when_target_reached() {
+        let mut session = WorkflowSession::new(
+            SessionId::new("test-sess-2"),
+            WorkflowId::new("wf-test"),
+            CommitmentContract::Unbreakable {
+                target_duration_seconds: 1800,
+            },
+        );
+        session.start().unwrap();
+        session.total_focus_seconds = 1800;
+
+        // Target reached -> complete succeeds naturally
+        session.complete().unwrap();
+        assert_eq!(session.state, SessionState::Completed);
+    }
+
+    #[test]
+    fn test_accountable_with_target_requires_sufficient_reason_when_early() {
+        let mut session = WorkflowSession::new(
+            SessionId::new("test-sess-3"),
+            WorkflowId::new("wf-test"),
+            CommitmentContract::AccountableBreakable {
+                min_reason_characters: 15,
+            },
+        );
+        session.start().unwrap();
+        session.total_focus_seconds = 200;
+
+        // Target is 1800s, elapsed is 200s, no reason -> early complete fails
+        let err = session
+            .complete_with_contract_target(Some(1800), None)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            SessionError::InsufficientReason {
+                min_chars: 15,
+                actual_chars: 0
+            }
+        );
+
+        // Too short reason -> fails
+        let err2 = session
+            .complete_with_contract_target(Some(1800), Some("Too short"))
+            .unwrap_err();
+        assert_eq!(
+            err2,
+            SessionError::InsufficientReason {
+                min_chars: 15,
+                actual_chars: 9
+            }
+        );
+
+        // Sufficient reason -> succeeds
+        session
+            .complete_with_contract_target(
+                Some(1800),
+                Some("Need to prepare urgently for client presentation"),
+            )
+            .unwrap();
+        assert_eq!(session.state, SessionState::Completed);
+        assert_eq!(
+            session.early_exit_reason,
+            Some("Need to prepare urgently for client presentation".to_string())
+        );
     }
 }
