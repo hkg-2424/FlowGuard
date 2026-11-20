@@ -62,10 +62,6 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_drift_session ON drift_events(session_id);
     "#,
-    // Migration 2: Enforce at most one Active or Paused session across the database (H-13)
-    r#"
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_single_active_session ON sessions((1)) WHERE state IN ('Active', 'Paused');
-    "#,
 ];
 
 /// Applies all pending schema migrations inside an atomic transaction.

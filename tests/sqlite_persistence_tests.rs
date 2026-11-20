@@ -399,29 +399,95 @@ fn test_h12_crash_recovery_rfc3339() {
 
 #[test]
 fn test_h13_single_active_session_constraint() {
+    use flowguard::application::ports::{ActivitySource, SourceError};
+    use flowguard::application::workflow_service::{WorkflowService, WorkflowServiceError};
+    use flowguard::domain::activity::{ActivityObservation, FreshnessState, IdleState};
+    use flowguard::domain::{SourceCapabilities, SourceHealth};
+
+    #[derive(Clone)]
+    struct DummySource;
+    impl ActivitySource for DummySource {
+        fn connect(&mut self) -> Result<SourceCapabilities, SourceError> {
+            Ok(SourceCapabilities {
+                provider: "dummy".into(),
+                server_version: None,
+                hostname: None,
+                is_testing: true,
+                capabilities: flowguard::domain::ActivityCapabilities {
+                    application_tracking: true,
+                    window_title_tracking: true,
+                    idle_tracking: true,
+                    browser_url_tracking: false,
+                    incognito_detection: false,
+                },
+            })
+        }
+        fn poll(&mut self) -> Result<ActivityObservation, SourceError> {
+            Ok(ActivityObservation {
+                observed_at: Utc::now(),
+                application: Some("code.exe".into()),
+                window_title: Some("main.rs".into()),
+                browser: None,
+                idle_state: IdleState::Active,
+                capabilities: flowguard::domain::ActivityCapabilities {
+                    application_tracking: true,
+                    window_title_tracking: true,
+                    idle_tracking: true,
+                    browser_url_tracking: false,
+                    incognito_detection: false,
+                },
+                source_health: SourceHealth::Connected,
+                window_freshness: FreshnessState::Fresh,
+                idle_freshness: FreshnessState::Fresh,
+                browser_freshness: FreshnessState::Missing,
+                diagnostics: vec![],
+            })
+        }
+        fn health(&self) -> SourceHealth {
+            SourceHealth::Connected
+        }
+        fn diagnose(&mut self) -> Result<flowguard::domain::DiagnosticReport, SourceError> {
+            Ok(flowguard::domain::DiagnosticReport::unreachable(
+                "Dummy",
+                "",
+                SourceHealth::Connected,
+                String::new(),
+            ))
+        }
+    }
+
     let db = SqliteDb::open_in_memory().expect("Failed to create in-memory SQLite DB");
-    let mut session_repo = SqliteSessionRepository::new(db.clone());
+    let mut wf_repo = SqliteWorkflowRepository::new(db.clone());
+    let wf_id = WorkflowId::new("wf-study");
+    let wf = Workflow::new(wf_id.clone(), "Study");
+    wf_repo.save(&wf).unwrap();
 
-    let mut sess1 = WorkflowSession::new(
-        SessionId::new("sess_unique_1"),
-        WorkflowId::new("wf1"),
-        CommitmentContract::Standard,
+    let session_repo1 = SqliteSessionRepository::new(db.clone());
+    let mut service1 = WorkflowService::new(
+        Box::new(DummySource),
+        Box::new(wf_repo.clone()),
+        Box::new(session_repo1),
+        1000,
     );
-    sess1.start().unwrap();
-    session_repo
-        .save(&sess1)
-        .expect("Saving first active session must succeed");
+    service1
+        .start_session(&wf_id)
+        .expect("Starting first session must succeed");
 
-    let mut sess2 = WorkflowSession::new(
-        SessionId::new("sess_unique_2"),
-        WorkflowId::new("wf2"),
-        CommitmentContract::Standard,
+    // Service 2 sharing the same SQLite database cannot start a second active session (H-13)
+    let session_repo2 = SqliteSessionRepository::new(db);
+    let mut service2 = WorkflowService::new(
+        Box::new(DummySource),
+        Box::new(wf_repo),
+        Box::new(session_repo2),
+        1000,
     );
-    sess2.start().unwrap();
-    let res = session_repo.save(&sess2);
+    let res = service2.start_session(&wf_id);
     assert!(
-        res.is_err(),
-        "Saving second active session must fail due to single active session constraint: {:?}",
+        matches!(
+            res,
+            Err(WorkflowServiceError::ActiveSessionAlreadyExists(_))
+        ),
+        "Expected ActiveSessionAlreadyExists, got: {:?}",
         res
     );
 }
