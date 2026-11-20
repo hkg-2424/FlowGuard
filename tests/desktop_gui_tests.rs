@@ -372,3 +372,128 @@ fn test_gui_full_http_api_and_session_lifecycle() {
     let _ = server_handle.join();
     let _ = std::fs::remove_file(temp_db_path);
 }
+
+// 4. Security Verification: C-01 (Host / Origin / Cache-Control), H-14 (64KB body), H-18 (empty workflow)
+#[test]
+fn test_gui_api_security_enforcement() {
+    let temp_db_path = std::env::temp_dir().join(format!(
+        "flowguard_gui_sec_test_{}.db",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    let db = SqliteDb::open(&temp_db_path).expect("Opens test sqlite db");
+    let mut repo = SqliteWorkflowRepository::new(db.clone());
+    seed_default_workflows_if_empty(&mut repo);
+
+    let server = Server::http("127.0.0.1:0").expect("Binds ephemeral test server");
+    let base_url = format!("http://{}", server.server_addr());
+
+    let running = Arc::new(AtomicBool::new(true));
+    let gui_state = Arc::new(Mutex::new(GuiState::new(
+        "Native Windows (Win32)".to_string(),
+    )));
+
+    let (command_tx, _command_rx) = std::sync::mpsc::channel();
+    let server_ctx = Arc::new(GuiServerContext {
+        gui_state,
+        db,
+        running: running.clone(),
+        command_tx,
+    });
+    let server_handle = std::thread::spawn(move || {
+        run_server(server, server_ctx);
+    });
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    // 1. Verify Cache-Control: no-store and no wildcard CORS on API responses (H-16, C-01)
+    let res = client
+        .get(format!("{}/api/workflows", base_url))
+        .send()
+        .expect("Fetches workflows");
+    assert_eq!(res.status().as_u16(), 200);
+    let cache_hdr = res
+        .headers()
+        .get("cache-control")
+        .expect("Cache-Control header required")
+        .to_str()
+        .unwrap();
+    assert!(
+        cache_hdr.contains("no-store"),
+        "API responses must include Cache-Control: no-store"
+    );
+    // Request without Origin header must NOT receive Access-Control-Allow-Origin: *
+    assert!(
+        res.headers().get("access-control-allow-origin").is_none(),
+        "Must not emit Access-Control-Allow-Origin when no Origin is provided"
+    );
+
+    // 2. Verify Trusted Origin reflection (never wildcard *)
+    let trusted_res = client
+        .get(format!("{}/api/workflows", base_url))
+        .header("Origin", "http://127.0.0.1:3124")
+        .send()
+        .expect("Sends request with trusted origin");
+    assert_eq!(trusted_res.status().as_u16(), 200);
+    let cors_hdr = trusted_res
+        .headers()
+        .get("access-control-allow-origin")
+        .expect("Must reflect trusted origin")
+        .to_str()
+        .unwrap();
+    assert_eq!(cors_hdr, "http://127.0.0.1:3124");
+    assert_ne!(cors_hdr, "*", "Never allow wildcard CORS origin");
+
+    // 3. Verify Untrusted Origin rejection (C-01)
+    let evil_res = client
+        .get(format!("{}/api/workflows", base_url))
+        .header("Origin", "http://evil.com")
+        .send()
+        .expect("Sends request with untrusted origin");
+    assert_eq!(
+        evil_res.status().as_u16(),
+        403,
+        "Must reject untrusted cross-origin requests with 403 Forbidden"
+    );
+
+    // 4. Verify Bounded Body Enforcement (H-14: reject bodies > 64 KB with 413)
+    let oversized_payload = "x".repeat(65 * 1024); // 65 KB > 64 KB limit
+    let oversized_res = client
+        .post(format!("{}/api/workflows", base_url))
+        .header("Content-Type", "application/json")
+        .body(oversized_payload)
+        .send()
+        .expect("Sends oversized body");
+    assert_eq!(
+        oversized_res.status().as_u16(),
+        413,
+        "Must reject request bodies exceeding 64KB with 413 Payload Too Large"
+    );
+
+    // 5. Verify Empty Workflow Selection Rejection (H-18)
+    let empty_wf_res = client
+        .post(format!("{}/api/workflows", base_url))
+        .json(&CreateWorkflowRequest {
+            name: "Empty Trap".to_string(),
+            description: None,
+            duration_minutes: Some(25),
+            contract_type: "standard".to_string(),
+            min_reason_characters: None,
+            allowed_apps: vec![],
+            allowed_domains: vec![],
+        })
+        .send()
+        .expect("Sends empty workflow creation");
+    assert_eq!(
+        empty_wf_res.status().as_u16(),
+        400,
+        "Must reject workflow creation with empty apps and domains"
+    );
+
+    // Shutdown test server
+    running.store(false, Ordering::SeqCst);
+    let _ = server_handle.join();
+    let _ = std::fs::remove_file(temp_db_path);
+}

@@ -248,57 +248,167 @@ function renderWorkflows(workflows) {
   const container = document.getElementById('workflows-container');
   if (!container) return;
 
-  container.innerHTML = workflows.map(wf => {
+  container.replaceChildren();
+
+  workflows.forEach(wf => {
     const icon = getWorkflowIcon(wf.name);
     const duration = wf.target_duration_minutes ? `${wf.target_duration_minutes} min` : 'Open';
     const contractClass = wf.contract_type.toLowerCase().includes('unbreakable') ? 'badge-danger' :
                           wf.contract_type.toLowerCase().includes('accountable') ? 'badge-warning' : 'badge-standard';
-
-    const appTags = (wf.allowed_apps || []).slice(0, 4).map(app => `<span class="wf-tag">${escapeHtml(app)}</span>`).join('');
-    const domainTags = (wf.allowed_domains || []).slice(0, 3).map(dom => `<span class="wf-tag">${escapeHtml(dom)}</span>`).join('');
     const isCustom = !['wf-study', 'wf-deep-work', 'wf-coding', 'wf-reading'].includes(wf.id);
 
-    return `
-      <div class="workflow-card">
-        <div class="workflow-card-header">
-          <div class="wf-icon-wrap">${icon}</div>
-          <div style="display:flex;gap:6px;align-items:center;">
-            <span class="wf-badge-contract ${contractClass}">${escapeHtml(wf.contract_type)}</span>
-            ${isCustom ? `<button class="btn btn-ghost btn-xs text-muted" onclick="deleteWorkflow('${escapeJs(wf.id)}')" title="Delete custom workflow">✕</button>` : ''}
-          </div>
-        </div>
-        <h3 class="wf-title">${escapeHtml(wf.name)}</h3>
-        <div class="wf-duration">Target: ${duration}</div>
+    const card = document.createElement('div');
+    card.className = 'workflow-card';
 
-        <div class="wf-rules-list">
-          <div>
-            <div class="wf-rule-group-title">Allowed Applications</div>
-            <div class="wf-tags-wrap">${appTags || '<span class="text-muted text-xs">All Apps</span>'}</div>
-          </div>
-          <div class="mt-2">
-            <div class="wf-rule-group-title">Allowed Web Domains</div>
-            <div class="wf-tags-wrap">${domainTags || '<span class="text-muted text-xs">All Sites</span>'}</div>
-          </div>
-        </div>
+    // Header
+    const header = document.createElement('div');
+    header.className = 'workflow-card-header';
 
-        <div class="wf-actions-row">
-          <button class="btn btn-primary btn-md flex-1" onclick="startWorkflowSession('${escapeJs(wf.id)}')">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <polygon points="5 3 19 12 5 21 5 3"/>
-            </svg>
-            Start Focus Session
-          </button>
-          <button class="btn btn-secondary btn-md" onclick="forkWorkflowPreset('${escapeJs(wf.id)}')" title="Copy &amp; Customize preset">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-            </svg>
-            Fork
-          </button>
-        </div>
-      </div>
-    `;
-  }).join('');
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'wf-icon-wrap';
+    iconWrap.textContent = icon;
+    header.appendChild(iconWrap);
+
+    const badgeGroup = document.createElement('div');
+    badgeGroup.style.display = 'flex';
+    badgeGroup.style.gap = '6px';
+    badgeGroup.style.alignItems = 'center';
+
+    const contractBadge = document.createElement('span');
+    contractBadge.className = `wf-badge-contract ${contractClass}`;
+    contractBadge.textContent = wf.contract_type;
+    badgeGroup.appendChild(contractBadge);
+
+    if (isCustom) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn btn-ghost btn-xs text-muted';
+      deleteBtn.title = 'Delete custom workflow';
+      deleteBtn.textContent = '✕';
+      deleteBtn.addEventListener('click', () => deleteWorkflow(wf.id));
+      badgeGroup.appendChild(deleteBtn);
+    }
+    header.appendChild(badgeGroup);
+    card.appendChild(header);
+
+    // Title
+    const titleEl = document.createElement('h3');
+    titleEl.className = 'wf-title';
+    titleEl.textContent = wf.name;
+    card.appendChild(titleEl);
+
+    // Duration
+    const durEl = document.createElement('div');
+    durEl.className = 'wf-duration';
+    durEl.textContent = `Target: ${duration}`;
+    card.appendChild(durEl);
+
+    // Rules list
+    const rulesList = document.createElement('div');
+    rulesList.className = 'wf-rules-list';
+
+    // Apps group
+    const appsGroup = document.createElement('div');
+    const appsTitle = document.createElement('div');
+    appsTitle.className = 'wf-rule-group-title';
+    appsTitle.textContent = 'Allowed Applications';
+    appsGroup.appendChild(appsTitle);
+
+    const appsTagsWrap = document.createElement('div');
+    appsTagsWrap.className = 'wf-tags-wrap';
+    const allowedApps = wf.allowed_apps || [];
+    if (allowedApps.length === 0) {
+      const emptySpan = document.createElement('span');
+      emptySpan.className = 'text-muted text-xs';
+      emptySpan.textContent = 'All Apps';
+      appsTagsWrap.appendChild(emptySpan);
+    } else {
+      allowedApps.slice(0, 4).forEach(app => {
+        const tag = document.createElement('span');
+        tag.className = 'wf-tag';
+        tag.textContent = app;
+        appsTagsWrap.appendChild(tag);
+      });
+    }
+    appsGroup.appendChild(appsTagsWrap);
+    rulesList.appendChild(appsGroup);
+
+    // Domains group
+    const domsGroup = document.createElement('div');
+    domsGroup.className = 'mt-2';
+    const domsTitle = document.createElement('div');
+    domsTitle.className = 'wf-rule-group-title';
+    domsTitle.textContent = 'Allowed Web Domains';
+    domsGroup.appendChild(domsTitle);
+
+    const domsTagsWrap = document.createElement('div');
+    domsTagsWrap.className = 'wf-tags-wrap';
+    const allowedDomains = wf.allowed_domains || [];
+    if (allowedDomains.length === 0) {
+      const emptySpan = document.createElement('span');
+      emptySpan.className = 'text-muted text-xs';
+      emptySpan.textContent = 'All Sites';
+      domsTagsWrap.appendChild(emptySpan);
+    } else {
+      allowedDomains.slice(0, 3).forEach(dom => {
+        const tag = document.createElement('span');
+        tag.className = 'wf-tag';
+        tag.textContent = dom;
+        domsTagsWrap.appendChild(tag);
+      });
+    }
+    domsGroup.appendChild(domsTagsWrap);
+    rulesList.appendChild(domsGroup);
+
+    card.appendChild(rulesList);
+
+    // Actions row
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'wf-actions-row';
+
+    const startBtn = document.createElement('button');
+    startBtn.className = 'btn btn-primary btn-md flex-1';
+    const playSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    playSvg.setAttribute('width', '18');
+    playSvg.setAttribute('height', '18');
+    playSvg.setAttribute('viewBox', '0 0 24 24');
+    playSvg.setAttribute('fill', 'currentColor');
+    const playPoly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    playPoly.setAttribute('points', '5 3 19 12 5 21 5 3');
+    playSvg.appendChild(playPoly);
+    startBtn.appendChild(playSvg);
+    startBtn.appendChild(document.createTextNode(' Start Focus Session'));
+    startBtn.addEventListener('click', () => startWorkflowSession(wf.id));
+    actionsRow.appendChild(startBtn);
+
+    const forkBtn = document.createElement('button');
+    forkBtn.className = 'btn btn-secondary btn-md';
+    forkBtn.title = 'Copy & Customize preset';
+    const forkSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    forkSvg.setAttribute('width', '16');
+    forkSvg.setAttribute('height', '16');
+    forkSvg.setAttribute('viewBox', '0 0 24 24');
+    forkSvg.setAttribute('fill', 'none');
+    forkSvg.setAttribute('stroke', 'currentColor');
+    forkSvg.setAttribute('stroke-width', '2');
+    const forkRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    forkRect.setAttribute('x', '9');
+    forkRect.setAttribute('y', '9');
+    forkRect.setAttribute('width', '13');
+    forkRect.setAttribute('height', '13');
+    forkRect.setAttribute('rx', '2');
+    forkRect.setAttribute('ry', '2');
+    const forkPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    forkPath.setAttribute('d', 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1');
+    forkSvg.appendChild(forkRect);
+    forkSvg.appendChild(forkPath);
+    forkBtn.appendChild(forkSvg);
+    forkBtn.appendChild(document.createTextNode(' Fork'));
+    forkBtn.addEventListener('click', () => forkWorkflowPreset(wf.id));
+    actionsRow.appendChild(forkBtn);
+
+    card.appendChild(actionsRow);
+    container.appendChild(card);
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -312,7 +422,13 @@ function showToast(message, type = 'info') {
   toast.className = `toast toast-${type}`;
 
   const icon = type === 'success' ? '✓' : type === 'error' ? '⚠️' : 'ℹ️';
-  toast.innerHTML = `<span>${icon}</span><span>${message}</span>`;
+  const iconSpan = document.createElement('span');
+  iconSpan.textContent = icon;
+  const msgSpan = document.createElement('span');
+  msgSpan.textContent = message;
+
+  toast.appendChild(iconSpan);
+  toast.appendChild(msgSpan);
   container.appendChild(toast);
 
   setTimeout(() => {
@@ -380,7 +496,11 @@ function closeCreateWorkflowModal() {
 async function loadRunningApps() {
   const container = document.getElementById('open-apps-chips');
   if (!container) return;
-  container.innerHTML = '<span class="text-muted text-xs py-1">Scanning open desktop windows...</span>';
+  container.replaceChildren();
+  const loading = document.createElement('span');
+  loading.className = 'text-muted text-xs py-1';
+  loading.textContent = 'Scanning open desktop windows...';
+  container.appendChild(loading);
 
   try {
     const res = await fetch('/api/system/open-apps');
@@ -389,7 +509,11 @@ async function loadRunningApps() {
     renderOpenAppsChips();
   } catch (err) {
     console.warn('Error loading open apps:', err);
-    container.innerHTML = '<span class="text-muted text-xs py-1">No visible windows detected (or running in browser mode).</span>';
+    container.replaceChildren();
+    const noApps = document.createElement('span');
+    noApps.className = 'text-muted text-xs py-1';
+    noApps.textContent = 'No visible windows detected (or running in browser mode).';
+    container.appendChild(noApps);
   }
 }
 
@@ -405,30 +529,51 @@ function renderOpenAppsChips() {
   const container = document.getElementById('open-apps-chips');
   if (!container) return;
 
+  container.replaceChildren();
+
   if (!openRunningApps || openRunningApps.length === 0) {
-    container.innerHTML = '<span class="text-muted text-xs py-1">No other active desktop windows found.</span>';
+    const emptySpan = document.createElement('span');
+    emptySpan.className = 'text-muted text-xs py-1';
+    emptySpan.textContent = 'No other active desktop windows found.';
+    container.appendChild(emptySpan);
     return;
   }
 
   const filterInput = document.getElementById('filter-running-apps');
   const q = (filterInput ? filterInput.value : '').toLowerCase().trim();
 
-  container.innerHTML = openRunningApps.map(app => {
+  openRunningApps.forEach(app => {
     const isSelected = selectedApps.has(app.process_name.toLowerCase());
     const shortTitle = app.window_title ? ` (${app.window_title.slice(0, 25)}${app.window_title.length > 25 ? '...' : ''})` : '';
     const textToMatch = `${app.display_name} ${app.window_title} ${app.process_name}`.toLowerCase();
     const isVisible = !q || textToMatch.includes(q);
 
-    return `
-      <button type="button" class="chip-preset chip-open-app ${isSelected ? 'selected' : ''}" 
-              style="display: ${isVisible ? 'inline-flex' : 'none'};"
-              onclick="toggleAppTag('${escapeJs(app.process_name)}', '${escapeJs(app.display_name)}', '${escapeJs(app.window_title || '')}')">
-        <span>${isSelected ? '✓' : '+'}</span>
-        <strong>${escapeHtml(app.display_name)}</strong>
-        <span class="text-muted text-xs">${escapeHtml(shortTitle)}</span>
-      </button>
-    `;
-  }).join('');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `chip-preset chip-open-app ${isSelected ? 'selected' : ''}`;
+    btn.style.display = isVisible ? 'inline-flex' : 'none';
+
+    const statusSpan = document.createElement('span');
+    statusSpan.textContent = isSelected ? '✓' : '+';
+    btn.appendChild(statusSpan);
+
+    const strongEl = document.createElement('strong');
+    strongEl.textContent = app.display_name;
+    btn.appendChild(strongEl);
+
+    if (shortTitle) {
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'text-muted text-xs';
+      titleSpan.textContent = shortTitle;
+      btn.appendChild(titleSpan);
+    }
+
+    btn.addEventListener('click', () => {
+      toggleAppTag(app.process_name, app.display_name, app.window_title || '');
+    });
+
+    container.appendChild(btn);
+  });
 }
 
 function filterRunningApps(query) {
@@ -559,38 +704,60 @@ function renderSelectedTags() {
   // 1. Render Apps Tags
   const appsContainer = document.getElementById('selected-apps-container');
   if (appsContainer) {
+    appsContainer.replaceChildren();
     if (selectedApps.size === 0) {
-      appsContainer.innerHTML = '<span class="text-muted text-xs">No apps selected yet (will allow all unless specified)</span>';
+      const span = document.createElement('span');
+      span.className = 'text-muted text-xs';
+      span.textContent = 'No apps selected yet (select at least one app or website above)';
+      appsContainer.appendChild(span);
     } else {
-      let html = '';
       selectedApps.forEach((display, proc) => {
-        html += `
-          <span class="selected-tag-pill">
-            <span>💻 ${escapeHtml(display)}</span>
-            <button type="button" class="tag-remove-btn" onclick="toggleAppTag('${escapeJs(proc)}', '${escapeJs(display)}')">&times;</button>
-          </span>
-        `;
+        const pill = document.createElement('span');
+        pill.className = 'selected-tag-pill';
+
+        const label = document.createElement('span');
+        label.textContent = `💻 ${display}`;
+        pill.appendChild(label);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'tag-remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', () => toggleAppTag(proc, display));
+        pill.appendChild(removeBtn);
+
+        appsContainer.appendChild(pill);
       });
-      appsContainer.innerHTML = html;
     }
   }
 
   // 2. Render Domains Tags
   const domainsContainer = document.getElementById('selected-domains-container');
   if (domainsContainer) {
+    domainsContainer.replaceChildren();
     if (selectedDomains.size === 0) {
-      domainsContainer.innerHTML = '<span class="text-muted text-xs">No websites selected (will allow all unless specified)</span>';
+      const span = document.createElement('span');
+      span.className = 'text-muted text-xs';
+      span.textContent = 'No websites selected yet';
+      domainsContainer.appendChild(span);
     } else {
-      let html = '';
       selectedDomains.forEach((display, dom) => {
-        html += `
-          <span class="selected-tag-pill">
-            <span>🌐 ${escapeHtml(display)}</span>
-            <button type="button" class="tag-remove-btn" onclick="toggleDomainTag('${escapeJs(dom)}', '${escapeJs(display)}')">&times;</button>
-          </span>
-        `;
+        const pill = document.createElement('span');
+        pill.className = 'selected-tag-pill';
+
+        const label = document.createElement('span');
+        label.textContent = `🌐 ${display}`;
+        pill.appendChild(label);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'tag-remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', () => toggleDomainTag(dom, display));
+        pill.appendChild(removeBtn);
+
+        domainsContainer.appendChild(pill);
       });
-      domainsContainer.innerHTML = html;
     }
   }
 
@@ -643,6 +810,12 @@ async function submitCreateWorkflow() {
 
   const allowed_apps = Array.from(selectedApps.keys());
   const allowed_domains = Array.from(selectedDomains.keys());
+
+  // H-18: Prevent creating an immediate silent deny-all workflow
+  if (allowed_apps.length === 0 && allowed_domains.length === 0) {
+    showToast('Please select at least one allowed application or website. A workflow with no allowed apps or sites will block everything.', 'error');
+    return;
+  }
 
   try {
     const res = await fetch('/api/workflows', {
@@ -1045,28 +1218,55 @@ function renderSidePanel(snap) {
   // 4. Activity Feed Stream
   const feedContainer = document.getElementById('activity-feed-list');
   if (feedContainer && snap.recent_activities) {
+    feedContainer.replaceChildren();
     if (snap.recent_activities.length === 0) {
-      feedContainer.innerHTML = '<div class="empty-feed-placeholder"><span>Listening for window changes...</span></div>';
+      const placeholder = document.createElement('div');
+      placeholder.className = 'empty-feed-placeholder';
+      const span = document.createElement('span');
+      span.textContent = 'Listening for window changes...';
+      placeholder.appendChild(span);
+      feedContainer.appendChild(placeholder);
     } else {
-      feedContainer.innerHTML = snap.recent_activities.map(act => {
+      snap.recent_activities.forEach(act => {
         const itemClass = act.is_short_or_reel ? 'feed-short' :
                           act.is_distraction ? 'feed-distraction' : 'feed-productive';
         const icon = getActivityIcon(act.category, act.is_short_or_reel);
         const dur = act.duration_seconds >= 60 ? `${Math.floor(act.duration_seconds / 60)}m ${act.duration_seconds % 60}s` : `${act.duration_seconds}s`;
 
-        return `
-          <div class="activity-feed-item ${itemClass}">
-            <div class="feed-item-icon">${icon}</div>
-            <div class="feed-item-meta">
-              <div class="feed-item-top">
-                <span class="feed-item-app">${escapeHtml(act.category || act.app_name)}</span>
-                <span class="feed-item-duration">${dur}</span>
-              </div>
-              <div class="feed-item-detail">${escapeHtml(act.detail || act.window_title)}</div>
-            </div>
-          </div>
-        `;
-      }).join('');
+        const item = document.createElement('div');
+        item.className = `activity-feed-item ${itemClass}`;
+
+        const iconEl = document.createElement('div');
+        iconEl.className = 'feed-item-icon';
+        iconEl.textContent = icon;
+        item.appendChild(iconEl);
+
+        const meta = document.createElement('div');
+        meta.className = 'feed-item-meta';
+
+        const top = document.createElement('div');
+        top.className = 'feed-item-top';
+
+        const appSpan = document.createElement('span');
+        appSpan.className = 'feed-item-app';
+        appSpan.textContent = act.category || act.app_name || '';
+        top.appendChild(appSpan);
+
+        const durSpan = document.createElement('span');
+        durSpan.className = 'feed-item-duration';
+        durSpan.textContent = dur;
+        top.appendChild(durSpan);
+
+        meta.appendChild(top);
+
+        const detail = document.createElement('div');
+        detail.className = 'feed-item-detail';
+        detail.textContent = act.detail || act.window_title || '';
+        meta.appendChild(detail);
+
+        item.appendChild(meta);
+        feedContainer.appendChild(item);
+      });
     }
   }
 }
@@ -1306,34 +1506,86 @@ function renderHistory(sessions) {
   const tbody = document.getElementById('history-table-body');
   if (!tbody) return;
 
+  tbody.replaceChildren();
+
   if (sessions.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-8">No historical sessions recorded yet. Start your first session!</td></tr>`;
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 8;
+    td.className = 'text-center text-muted py-8';
+    td.textContent = 'No historical sessions recorded yet. Start your first session!';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
     return;
   }
 
-  tbody.innerHTML = sessions.map(s => {
+  sessions.forEach(s => {
     const dateStr = new Date(s.start_time).toLocaleString();
     const scoreBadge = s.quality_score >= 85 ? 'badge-score-high' :
                        s.quality_score >= 65 ? 'badge-score-med' : 'badge-score-low';
-
     const exitNote = s.early_exit_reason ? `"${s.early_exit_reason}"` : '—';
     const hasDrifts = s.drifts && s.drifts.length > 0;
 
-    return `
-      <tr>
-        <td>${dateStr}</td>
-        <td><strong>${escapeHtml(s.workflow_name)}</strong></td>
-        <td><span class="status-badge">${escapeHtml(s.state)}</span></td>
-        <td>${formatNatural(s.total_focus_seconds)}</td>
-        <td><span class="badge-score ${scoreBadge}">${s.quality_score.toFixed(1)}%</span></td>
-        <td>${s.pull_back_count}</td>
-        <td class="text-xs text-muted" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(exitNote)}</td>
-        <td>
-          ${hasDrifts ? `<button class="btn btn-secondary btn-sm" onclick="viewDrifts('${escapeJs(s.id)}')">View Drifts (${s.drifts.length})</button>` : '<span class="text-muted text-xs">No Drifts</span>'}
-        </td>
-      </tr>
-    `;
-  }).join('');
+    const tr = document.createElement('tr');
+
+    const tdDate = document.createElement('td');
+    tdDate.textContent = dateStr;
+    tr.appendChild(tdDate);
+
+    const tdName = document.createElement('td');
+    const strongName = document.createElement('strong');
+    strongName.textContent = s.workflow_name;
+    tdName.appendChild(strongName);
+    tr.appendChild(tdName);
+
+    const tdState = document.createElement('td');
+    const stateBadge = document.createElement('span');
+    stateBadge.className = 'status-badge';
+    stateBadge.textContent = s.state;
+    tdState.appendChild(stateBadge);
+    tr.appendChild(tdState);
+
+    const tdFocus = document.createElement('td');
+    tdFocus.textContent = formatNatural(s.total_focus_seconds);
+    tr.appendChild(tdFocus);
+
+    const tdScore = document.createElement('td');
+    const scoreSpan = document.createElement('span');
+    scoreSpan.className = `badge-score ${scoreBadge}`;
+    scoreSpan.textContent = `${s.quality_score.toFixed(1)}%`;
+    tdScore.appendChild(scoreSpan);
+    tr.appendChild(tdScore);
+
+    const tdPullbacks = document.createElement('td');
+    tdPullbacks.textContent = s.pull_back_count;
+    tr.appendChild(tdPullbacks);
+
+    const tdReason = document.createElement('td');
+    tdReason.className = 'text-xs text-muted';
+    tdReason.style.maxWidth = '200px';
+    tdReason.style.overflow = 'hidden';
+    tdReason.style.textOverflow = 'ellipsis';
+    tdReason.style.whiteSpace = 'nowrap';
+    tdReason.textContent = exitNote;
+    tr.appendChild(tdReason);
+
+    const tdAction = document.createElement('td');
+    if (hasDrifts) {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-secondary btn-sm';
+      btn.textContent = `View Drifts (${s.drifts.length})`;
+      btn.addEventListener('click', () => viewDrifts(s.id));
+      tdAction.appendChild(btn);
+    } else {
+      const noDriftsSpan = document.createElement('span');
+      noDriftsSpan.className = 'text-muted text-xs';
+      noDriftsSpan.textContent = 'No Drifts';
+      tdAction.appendChild(noDriftsSpan);
+    }
+    tr.appendChild(tdAction);
+
+    tbody.appendChild(tr);
+  });
 }
 
 function viewDrifts(sessionId) {
@@ -1341,18 +1593,43 @@ function viewDrifts(sessionId) {
   if (!session || !session.drifts) return;
 
   const container = document.getElementById('drift-events-container');
-  container.innerHTML = session.drifts.map(d => `
-    <div class="active-app-box mb-2">
-      <div class="app-avatar">⚠️</div>
-      <div class="app-details">
-        <div class="app-name-row">
-          <span class="app-exe">${escapeHtml(d.target_name)}</span>
-          <span class="policy-chip chip-allowed">${escapeHtml(d.resolution)}</span>
-        </div>
-        <div class="text-xs text-muted">${new Date(d.timestamp).toLocaleTimeString()} — Distraction Duration: ${d.duration_seconds}s</div>
-      </div>
-    </div>
-  `).join('');
+  container.replaceChildren();
+
+  session.drifts.forEach(d => {
+    const box = document.createElement('div');
+    box.className = 'active-app-box mb-2';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'app-avatar';
+    avatar.textContent = '⚠️';
+    box.appendChild(avatar);
+
+    const details = document.createElement('div');
+    details.className = 'app-details';
+
+    const nameRow = document.createElement('div');
+    nameRow.className = 'app-name-row';
+
+    const exeSpan = document.createElement('span');
+    exeSpan.className = 'app-exe';
+    exeSpan.textContent = d.target_name;
+    nameRow.appendChild(exeSpan);
+
+    const resChip = document.createElement('span');
+    resChip.className = 'policy-chip chip-allowed';
+    resChip.textContent = d.resolution;
+    nameRow.appendChild(resChip);
+
+    details.appendChild(nameRow);
+
+    const metaDiv = document.createElement('div');
+    metaDiv.className = 'text-xs text-muted';
+    metaDiv.textContent = `${new Date(d.timestamp).toLocaleTimeString()} — Distraction Duration: ${d.duration_seconds}s`;
+    details.appendChild(metaDiv);
+
+    box.appendChild(details);
+    container.appendChild(box);
+  });
 
   document.getElementById('modal-drift-events').classList.remove('hidden');
   syncModalBodyLock();
