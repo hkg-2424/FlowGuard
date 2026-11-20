@@ -1,8 +1,10 @@
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server};
 use tracing::{error, info};
+use url::Url;
 
 use crate::application::ports::{SessionRepository, WorkflowRepository};
 use crate::domain::workflow::{
@@ -21,11 +23,106 @@ const INDEX_HTML: &str = include_str!("static/index.html");
 const STYLE_CSS: &str = include_str!("static/style.css");
 const APP_JS: &str = include_str!("static/app.js");
 
+/// Maximum allowable request body size (64 KB) to prevent DoS via unbounded payloads (H-14).
+const MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024;
+
 pub struct GuiServerContext {
     pub gui_state: Arc<Mutex<GuiState>>,
     pub db: SqliteDb,
     pub running: Arc<AtomicBool>,
     pub command_tx: std::sync::mpsc::Sender<super::engine::GuiCommand>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum OriginCheck {
+    NoOrigin,
+    Trusted(String),
+    Untrusted,
+}
+
+/// Validates that the request Host header matches loopback (127.0.0.1 or localhost with optional port).
+/// Protects against DNS rebinding attacks (C-01).
+pub fn validate_host(request: &Request) -> bool {
+    let host_header = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Host") || h.field.as_str().as_str().eq_ignore_ascii_case("host"));
+
+    let host_val = match host_header {
+        Some(h) => h.value.as_str().trim(),
+        None => return false,
+    };
+
+    if host_val.is_empty() {
+        return false;
+    }
+
+    let (hostname, port_str) = match host_val.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (host_val, None),
+    };
+
+    let host_lower = hostname.to_lowercase();
+    if host_lower != "127.0.0.1" && host_lower != "localhost" {
+        return false;
+    }
+
+    if let Some(port) = port_str {
+        if port.parse::<u16>().is_err() {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Checks the Origin header against trusted local origins.
+/// Untrusted cross-origin requests are rejected (C-01).
+pub fn check_origin(request: &Request) -> OriginCheck {
+    let origin_header = request.headers().iter().find(|h| {
+        h.field.equiv("Origin") || h.field.as_str().as_str().eq_ignore_ascii_case("origin")
+    });
+
+    let origin_val = match origin_header {
+        Some(h) => h.value.as_str().trim(),
+        None => return OriginCheck::NoOrigin,
+    };
+
+    if origin_val.is_empty() {
+        return OriginCheck::Untrusted;
+    }
+
+    if let Ok(parsed) = Url::parse(origin_val) {
+        if parsed.scheme() == "http" {
+            if let Some(host) = parsed.host_str() {
+                let host_lower = host.to_lowercase();
+                if host_lower == "127.0.0.1" || host_lower == "localhost" {
+                    return OriginCheck::Trusted(origin_val.to_string());
+                }
+            }
+        }
+    }
+
+    OriginCheck::Untrusted
+}
+
+/// Reads request body up to MAX_REQUEST_BODY_BYTES (64 KB). Returns error if exceeded (H-14).
+pub fn read_bounded_body(request: &mut Request) -> Result<String, (u16, &'static str)> {
+    if let Some(len) = request.body_length() {
+        if len > MAX_REQUEST_BODY_BYTES as usize {
+            return Err((413, "Request body exceeds 64KB limit"));
+        }
+    }
+
+    let mut buf = Vec::new();
+    let mut reader = request.as_reader().take(MAX_REQUEST_BODY_BYTES + 1);
+    if reader.read_to_end(&mut buf).is_err() {
+        return Err((400, "Failed to read request body"));
+    }
+    if buf.len() > MAX_REQUEST_BODY_BYTES as usize {
+        return Err((413, "Request body exceeds 64KB limit"));
+    }
+    String::from_utf8(buf).map_err(|_| (400, "Request body is not valid UTF-8"))
 }
 
 pub fn run_server(server: Server, ctx: Arc<GuiServerContext>) {
@@ -56,6 +153,36 @@ pub fn run_server(server: Server, ctx: Arc<GuiServerContext>) {
 }
 
 fn handle_request(mut request: Request, ctx: &GuiServerContext) {
+    // 1. Host Validation (C-01): Only allow 127.0.0.1:<port> or localhost:<port>
+    if !validate_host(&request) {
+        let resp = Response::from_string(r#"{"error":"Invalid or missing Host header"}"#)
+            .with_status_code(400)
+            .with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+            )
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+            .with_header(
+                Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+            )
+            .with_header(Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap());
+        let _ = request.respond(resp);
+        return;
+    }
+
+    // 2. Origin Validation (C-01): Reject untrusted cross-origin requests
+    if let OriginCheck::Untrusted = check_origin(&request) {
+        let resp = Response::from_string(
+            r#"{"error":"Forbidden: Untrusted cross-origin request rejected"}"#,
+        )
+        .with_status_code(403)
+        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap());
+        let _ = request.respond(resp);
+        return;
+    }
+
     let url = request.url().to_string();
     let method = request.method().clone();
 
@@ -64,21 +191,38 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
 
     match (&method, path) {
         (&Method::Options, _) => {
-            let cors = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
+            let origin_check = check_origin(&request);
             let methods = Header::from_bytes(
                 &b"Access-Control-Allow-Methods"[..],
-                &b"GET, POST, OPTIONS, HEAD"[..],
+                &b"GET, POST, OPTIONS, HEAD, DELETE"[..],
             )
             .unwrap();
             let headers = Header::from_bytes(
                 &b"Access-Control-Allow-Headers"[..],
-                &b"Content-Type, Authorization"[..],
+                &b"Content-Type, Authorization, X-Requested-With"[..],
             )
             .unwrap();
-            let resp = Response::empty(204)
-                .with_header(cors)
+            let cache = Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap();
+            let max_age =
+                Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap();
+
+            let mut resp = Response::empty(204)
                 .with_header(methods)
-                .with_header(headers);
+                .with_header(headers)
+                .with_header(cache)
+                .with_header(max_age);
+
+            if let OriginCheck::Trusted(ref o) = origin_check {
+                if let Ok(cors) =
+                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], o.as_bytes())
+                {
+                    resp.add_header(cors);
+                }
+                if let Ok(vary) = Header::from_bytes(&b"Vary"[..], &b"Origin"[..]) {
+                    resp.add_header(vary);
+                }
+            }
+
             let _ = request.respond(resp);
         }
         (&Method::Get, "/api/system/open-apps") => {
@@ -95,25 +239,45 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             respond_json(request, 200, &json);
         }
         (&Method::Get | &Method::Head, "/" | "/index.html") => {
-            let resp = Response::from_string(INDEX_HTML).with_header(
-                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
-            );
+            let resp = Response::from_string(INDEX_HTML)
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                        .unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap())
+                .with_header(
+                    Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap());
             let _ = request.respond(resp);
         }
         (&Method::Get | &Method::Head, "/style.css") => {
-            let resp = Response::from_string(STYLE_CSS).with_header(
-                Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=utf-8"[..]).unwrap(),
-            );
+            let resp = Response::from_string(STYLE_CSS)
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=utf-8"[..])
+                        .unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap())
+                .with_header(
+                    Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap());
             let _ = request.respond(resp);
         }
         (&Method::Get | &Method::Head, "/app.js") => {
-            let resp = Response::from_string(APP_JS).with_header(
-                Header::from_bytes(
-                    &b"Content-Type"[..],
-                    &b"application/javascript; charset=utf-8"[..],
+            let resp = Response::from_string(APP_JS)
+                .with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/javascript; charset=utf-8"[..],
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            );
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-cache"[..]).unwrap())
+                .with_header(
+                    Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap());
             let _ = request.respond(resp);
         }
         (&Method::Get, "/api/session/live") => {
@@ -136,11 +300,13 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             }
         }
         (&Method::Post, "/api/workflows") => {
-            let mut body = String::new();
-            if let Err(e) = request.as_reader().read_to_string(&mut body) {
-                respond_error(request, 400, &format!("Failed to read request body: {}", e));
-                return;
-            }
+            let body = match read_bounded_body(&mut request) {
+                Ok(b) => b,
+                Err((status, msg)) => {
+                    respond_error(request, status, msg);
+                    return;
+                }
+            };
 
             let req_data: CreateWorkflowRequest = match serde_json::from_str(&body) {
                 Ok(d) => d,
@@ -149,6 +315,16 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
                     return;
                 }
             };
+
+            // H-18: Prevent empty app/site selection from creating an immediate silent deny-all workflow.
+            if req_data.allowed_apps.is_empty() && req_data.allowed_domains.is_empty() {
+                respond_error(
+                    request,
+                    400,
+                    "Workflow must specify at least one allowed application or domain to avoid creating an unintended deny-all policy.",
+                );
+                return;
+            }
 
             let mut repo = SqliteWorkflowRepository::new(ctx.db.clone());
             let base_slug: String = req_data
@@ -352,11 +528,13 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             }
         }
         (&Method::Post, "/api/session/start") => {
-            let mut body = String::new();
-            if let Err(e) = request.as_reader().read_to_string(&mut body) {
-                respond_error(request, 400, &format!("Failed to read request body: {}", e));
-                return;
-            }
+            let body = match read_bounded_body(&mut request) {
+                Ok(b) => b,
+                Err((status, msg)) => {
+                    respond_error(request, status, msg);
+                    return;
+                }
+            };
 
             let req_data: StartSessionRequest = match serde_json::from_str(&body) {
                 Ok(d) => d,
@@ -412,10 +590,24 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             }
         }
         (&Method::Post, "/api/session/stop") => {
-            let mut body = String::new();
-            let _ = request.as_reader().read_to_string(&mut body);
-            let req_data: StopSessionRequest =
-                serde_json::from_str(&body).unwrap_or(StopSessionRequest { reason: None });
+            let body = match read_bounded_body(&mut request) {
+                Ok(b) => b,
+                Err((status, msg)) => {
+                    respond_error(request, status, msg);
+                    return;
+                }
+            };
+            let req_data: StopSessionRequest = if body.trim().is_empty() {
+                StopSessionRequest { reason: None }
+            } else {
+                match serde_json::from_str(&body) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        respond_error(request, 400, &format!("Invalid JSON body: {}", e));
+                        return;
+                    }
+                }
+            };
 
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let _ = ctx.command_tx.send(super::engine::GuiCommand::StopSession {
@@ -487,24 +679,52 @@ pub fn workflow_to_dto(wf: Workflow) -> WorkflowDto {
 }
 
 pub fn respond_json(request: Request, status: u16, json: &str) {
-    let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
-    let cors = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
+    let origin_check = check_origin(&request);
+    let header = Header::from_bytes(
+        &b"Content-Type"[..],
+        &b"application/json; charset=utf-8"[..],
+    )
+    .unwrap();
+    let cache_control = Header::from_bytes(
+        &b"Cache-Control"[..],
+        &b"no-store, no-cache, must-revalidate"[..],
+    )
+    .unwrap();
+    let pragma = Header::from_bytes(&b"Pragma"[..], &b"no-cache"[..]).unwrap();
+    let nosniff = Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap();
+    let frame_deny = Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap();
+
     let methods = Header::from_bytes(
         &b"Access-Control-Allow-Methods"[..],
-        &b"GET, POST, OPTIONS, HEAD"[..],
+        &b"GET, POST, OPTIONS, HEAD, DELETE"[..],
     )
     .unwrap();
     let headers = Header::from_bytes(
         &b"Access-Control-Allow-Headers"[..],
-        &b"Content-Type, Authorization"[..],
+        &b"Content-Type, Authorization, X-Requested-With"[..],
     )
     .unwrap();
-    let resp = Response::from_string(json)
+
+    let mut resp = Response::from_string(json)
         .with_status_code(status)
         .with_header(header)
-        .with_header(cors)
+        .with_header(cache_control)
+        .with_header(pragma)
+        .with_header(nosniff)
+        .with_header(frame_deny)
         .with_header(methods)
         .with_header(headers);
+
+    // C-01: Never send wildcard Access-Control-Allow-Origin: *. Only reflect verified trusted origins.
+    if let OriginCheck::Trusted(ref o) = origin_check {
+        if let Ok(cors) = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], o.as_bytes()) {
+            resp.add_header(cors);
+        }
+        if let Ok(vary) = Header::from_bytes(&b"Vary"[..], &b"Origin"[..]) {
+            resp.add_header(vary);
+        }
+    }
+
     let _ = request.respond(resp);
 }
 
