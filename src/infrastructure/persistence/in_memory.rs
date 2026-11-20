@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::application::ports::{RepositoryError, SessionRepository, WorkflowRepository};
-use crate::domain::workflow::{DriftEvent, SessionId, Workflow, WorkflowId, WorkflowSession};
+use crate::domain::workflow::{
+    DriftEvent, SessionId, SessionState, Workflow, WorkflowId, WorkflowSession,
+};
 
 /// Fast, thread-safe, in-memory implementation of [`WorkflowRepository`].
 ///
@@ -119,5 +121,22 @@ impl SessionRepository for InMemorySessionRepository {
         list.sort_by_key(|a| std::cmp::Reverse(a.start_time));
         list.truncate(limit);
         Ok(list)
+    }
+
+    fn recover_interrupted_sessions(&mut self) -> Result<usize, RepositoryError> {
+        let mut lock = self
+            .sessions
+            .lock()
+            .map_err(|e| RepositoryError::Storage(e.to_string()))?;
+        let now = chrono::Utc::now();
+        let mut count = 0;
+        for session in lock.values_mut() {
+            if session.state == SessionState::Active || session.state == SessionState::Paused {
+                session.state = SessionState::Interrupted;
+                session.end_time = Some(now);
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }

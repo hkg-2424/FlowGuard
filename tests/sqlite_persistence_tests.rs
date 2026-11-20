@@ -231,3 +231,264 @@ fn test_sqlite_session_and_drift_logging() {
     assert_eq!(completed_session.state, SessionState::Completed);
     assert!(completed_session.end_time.is_some());
 }
+
+#[test]
+fn test_h11_corrupt_enum_and_timestamp_validation() {
+    use flowguard::application::ports::RepositoryError;
+
+    let db = SqliteDb::open_in_memory().expect("Failed to create in-memory SQLite DB");
+    let session_repo = SqliteSessionRepository::new(db.clone());
+    let workflow_repo = SqliteWorkflowRepository::new(db.clone());
+
+    // 1. Corrupt session state
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, workflow_id, state, commitment_contract, start_time)
+             VALUES ('sess_corrupt_state', 'wf1', 'InvalidState', '\"Standard\"', '2026-11-20T12:00:00Z')",
+            [],
+        ).unwrap();
+    }
+    let res = session_repo.get(&SessionId::new("sess_corrupt_state"));
+    assert!(
+        matches!(res, Err(RepositoryError::CorruptData(_))),
+        "Expected CorruptData for invalid state, got: {:?}",
+        res
+    );
+
+    // 2. Corrupt session timestamp
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, workflow_id, state, commitment_contract, start_time)
+             VALUES ('sess_corrupt_time', 'wf1', 'Active', '\"Standard\"', 'not-a-valid-timestamp')",
+            [],
+        ).unwrap();
+    }
+    let res = session_repo.get(&SessionId::new("sess_corrupt_time"));
+    assert!(
+        matches!(res, Err(RepositoryError::CorruptData(_))),
+        "Expected CorruptData for invalid start_time, got: {:?}",
+        res
+    );
+
+    // 3. Corrupt workflow rule scope
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workflows (id, name, description, default_grace_period_seconds, commitment_contract, default_effect, created_at, updated_at)
+             VALUES ('wf_corrupt_scope', 'WF', 'Desc', 30, '\"Standard\"', 'Allow', '2026-11-20T12:00:00Z', '2026-11-20T12:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workflow_rules (id, workflow_id, description, scope, matcher, effect, priority_weight)
+             VALUES ('rule_corrupt_scope', 'wf_corrupt_scope', 'Desc', 9999, '{\"ApplicationName\":\"app.exe\"}', 'Allow', 10)",
+            [],
+        ).unwrap();
+    }
+    let res = workflow_repo.get(&WorkflowId::new("wf_corrupt_scope"));
+    assert!(
+        matches!(res, Err(RepositoryError::CorruptData(_))),
+        "Expected CorruptData for invalid rule scope, got: {:?}",
+        res
+    );
+
+    // 4. Corrupt workflow rule effect
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workflows (id, name, description, default_grace_period_seconds, commitment_contract, default_effect, created_at, updated_at)
+             VALUES ('wf_corrupt_effect', 'WF', 'Desc', 30, '\"Standard\"', 'Allow', '2026-11-20T12:00:00Z', '2026-11-20T12:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workflow_rules (id, workflow_id, description, scope, matcher, effect, priority_weight)
+             VALUES ('rule_corrupt_effect', 'wf_corrupt_effect', 'Desc', 200, '{\"ApplicationName\":\"app.exe\"}', 'InvalidEffect', 10)",
+            [],
+        ).unwrap();
+    }
+    let res = workflow_repo.get(&WorkflowId::new("wf_corrupt_effect"));
+    assert!(
+        matches!(res, Err(RepositoryError::CorruptData(_))),
+        "Expected CorruptData for invalid rule effect, got: {:?}",
+        res
+    );
+
+    // 5. Corrupt rule expires_at
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workflows (id, name, description, default_grace_period_seconds, commitment_contract, default_effect, created_at, updated_at)
+             VALUES ('wf_corrupt_exp', 'WF', 'Desc', 30, '\"Standard\"', 'Allow', '2026-11-20T12:00:00Z', '2026-11-20T12:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workflow_rules (id, workflow_id, description, scope, matcher, effect, priority_weight, expires_at)
+             VALUES ('rule_corrupt_exp', 'wf_corrupt_exp', 'Desc', 200, '{\"ApplicationName\":\"app.exe\"}', 'Allow', 10, 'corrupt-date')",
+            [],
+        ).unwrap();
+    }
+    let res = workflow_repo.get(&WorkflowId::new("wf_corrupt_exp"));
+    assert!(
+        matches!(res, Err(RepositoryError::CorruptData(_))),
+        "Expected CorruptData for invalid rule expires_at, got: {:?}",
+        res
+    );
+
+    // 6. Corrupt drift event timestamp
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, workflow_id, state, commitment_contract, start_time)
+             VALUES ('sess_drift_test', 'wf1', 'Completed', '\"Standard\"', '2026-11-20T12:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO drift_events (session_id, target_name, duration_seconds, resolution, timestamp)
+             VALUES ('sess_drift_test', 'bad.com', 10, '\"Intervened\"', 'bogus-timestamp')",
+            [],
+        ).unwrap();
+    }
+    let res = session_repo.list_drifts(&SessionId::new("sess_drift_test"));
+    assert!(
+        matches!(res, Err(RepositoryError::CorruptData(_))),
+        "Expected CorruptData for invalid drift timestamp, got: {:?}",
+        res
+    );
+}
+
+#[test]
+fn test_h12_crash_recovery_rfc3339() {
+    let db = SqliteDb::open_in_memory().expect("Failed to create in-memory SQLite DB");
+    let mut session_repo = SqliteSessionRepository::new(db.clone());
+
+    // Insert an active session that did not get closed cleanly
+    {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, workflow_id, state, commitment_contract, start_time)
+             VALUES ('sess_unclean_1', 'wf1', 'Active', '\"Standard\"', '2026-11-20T10:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // Recover interrupted sessions
+    let recovered = session_repo.recover_interrupted_sessions().unwrap();
+    assert_eq!(recovered, 1);
+
+    // Load recovered session
+    let sess = session_repo
+        .get(&SessionId::new("sess_unclean_1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(sess.state, SessionState::Interrupted);
+    assert!(
+        sess.end_time.is_some(),
+        "Recovered session must have end_time set"
+    );
+
+    // The end_time must be readable and parsed successfully as RFC3339
+    let end_time = sess.end_time.unwrap();
+    let diff = (Utc::now() - end_time).num_seconds().abs();
+    assert!(
+        diff < 5,
+        "Recovered end_time must be close to now, diff was {}s",
+        diff
+    );
+}
+
+#[test]
+fn test_h13_single_active_session_constraint() {
+    use flowguard::application::ports::{ActivitySource, SourceError};
+    use flowguard::application::workflow_service::{WorkflowService, WorkflowServiceError};
+    use flowguard::domain::activity::{ActivityObservation, FreshnessState, IdleState};
+    use flowguard::domain::{SourceCapabilities, SourceHealth};
+
+    #[derive(Clone)]
+    struct DummySource;
+    impl ActivitySource for DummySource {
+        fn connect(&mut self) -> Result<SourceCapabilities, SourceError> {
+            Ok(SourceCapabilities {
+                provider: "dummy".into(),
+                server_version: None,
+                hostname: None,
+                is_testing: true,
+                capabilities: flowguard::domain::ActivityCapabilities {
+                    application_tracking: true,
+                    window_title_tracking: true,
+                    idle_tracking: true,
+                    browser_url_tracking: false,
+                    incognito_detection: false,
+                },
+            })
+        }
+        fn poll(&mut self) -> Result<ActivityObservation, SourceError> {
+            Ok(ActivityObservation {
+                observed_at: Utc::now(),
+                application: Some("code.exe".into()),
+                window_title: Some("main.rs".into()),
+                browser: None,
+                idle_state: IdleState::Active,
+                capabilities: flowguard::domain::ActivityCapabilities {
+                    application_tracking: true,
+                    window_title_tracking: true,
+                    idle_tracking: true,
+                    browser_url_tracking: false,
+                    incognito_detection: false,
+                },
+                source_health: SourceHealth::Connected,
+                window_freshness: FreshnessState::Fresh,
+                idle_freshness: FreshnessState::Fresh,
+                browser_freshness: FreshnessState::Missing,
+                diagnostics: vec![],
+            })
+        }
+        fn health(&self) -> SourceHealth {
+            SourceHealth::Connected
+        }
+        fn diagnose(&mut self) -> Result<flowguard::domain::DiagnosticReport, SourceError> {
+            Ok(flowguard::domain::DiagnosticReport::unreachable(
+                "Dummy",
+                "",
+                SourceHealth::Connected,
+                String::new(),
+            ))
+        }
+    }
+
+    let db = SqliteDb::open_in_memory().expect("Failed to create in-memory SQLite DB");
+    let mut wf_repo = SqliteWorkflowRepository::new(db.clone());
+    let wf_id = WorkflowId::new("wf-study");
+    let wf = Workflow::new(wf_id.clone(), "Study");
+    wf_repo.save(&wf).unwrap();
+
+    let session_repo1 = SqliteSessionRepository::new(db.clone());
+    let mut service1 = WorkflowService::new(
+        Box::new(DummySource),
+        Box::new(wf_repo.clone()),
+        Box::new(session_repo1),
+        1000,
+    );
+    service1
+        .start_session(&wf_id)
+        .expect("Starting first session must succeed");
+
+    // Service 2 sharing the same SQLite database cannot start a second active session (H-13)
+    let session_repo2 = SqliteSessionRepository::new(db);
+    let mut service2 = WorkflowService::new(
+        Box::new(DummySource),
+        Box::new(wf_repo),
+        Box::new(session_repo2),
+        1000,
+    );
+    let res = service2.start_session(&wf_id);
+    assert!(
+        matches!(
+            res,
+            Err(WorkflowServiceError::ActiveSessionAlreadyExists(_))
+        ),
+        "Expected ActiveSessionAlreadyExists, got: {:?}",
+        res
+    );
+}

@@ -80,7 +80,12 @@ impl SqliteWorkflowRepository {
                 600 => RuleScope::Origin,
                 800 => RuleScope::ExactUrl,
                 1000 => RuleScope::ExactResource,
-                _ => RuleScope::GlobalDefault,
+                invalid => {
+                    return Err(RepositoryError::CorruptData(format!(
+                        "Invalid rule scope in database for rule '{}': {}",
+                        id, invalid
+                    )));
+                }
             };
 
             let matcher: RuleMatcher = serde_json::from_str(&matcher_json)
@@ -92,12 +97,28 @@ impl SqliteWorkflowRepository {
                 "Restrict" => RuleEffect::Restrict,
                 "Ignore" => RuleEffect::Ignore,
                 "Monitor" => RuleEffect::Monitor,
-                _ => RuleEffect::Restrict,
+                invalid => {
+                    return Err(RepositoryError::CorruptData(format!(
+                        "Invalid rule effect in database for rule '{}': {}",
+                        id, invalid
+                    )));
+                }
             };
 
-            let expires_at = expires_at_str
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+            let expires_at = match expires_at_str {
+                Some(ref s) => {
+                    let dt = DateTime::parse_from_rfc3339(s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .map_err(|e| {
+                            RepositoryError::CorruptData(format!(
+                                "Invalid RFC3339 expires_at '{}' for rule '{}': {}",
+                                s, id, e
+                            ))
+                        })?;
+                    Some(dt)
+                }
+                None => None,
+            };
 
             rules.push(WorkflowRule {
                 id: RuleId::new(id),
@@ -183,15 +204,30 @@ impl WorkflowRepository for SqliteWorkflowRepository {
             "Restrict" => RuleEffect::Restrict,
             "Ignore" => RuleEffect::Ignore,
             "Monitor" => RuleEffect::Monitor,
-            _ => RuleEffect::Restrict,
+            invalid => {
+                return Err(RepositoryError::CorruptData(format!(
+                    "Invalid default_effect in database for workflow '{}': {}",
+                    wf_id, invalid
+                )));
+            }
         };
 
         let created_at = DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+            .map_err(|e| {
+                RepositoryError::CorruptData(format!(
+                    "Invalid RFC3339 created_at '{}' for workflow '{}': {}",
+                    created_at_str, wf_id, e
+                ))
+            })?;
         let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+            .map_err(|e| {
+                RepositoryError::CorruptData(format!(
+                    "Invalid RFC3339 updated_at '{}' for workflow '{}': {}",
+                    updated_at_str, wf_id, e
+                ))
+            })?;
 
         let rules = Self::load_rules(&conn, id)?;
 

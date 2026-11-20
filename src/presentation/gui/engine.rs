@@ -15,17 +15,76 @@ pub enum GuiCommand {
     StartSession {
         workflow_id: WorkflowId,
         reply: Sender<Result<WorkflowSession, String>>,
+        deadline: Option<std::time::Instant>,
     },
     PauseSession {
         reply: Sender<Result<(), String>>,
+        deadline: Option<std::time::Instant>,
     },
     ResumeSession {
         reply: Sender<Result<(), String>>,
+        deadline: Option<std::time::Instant>,
     },
     StopSession {
         reason: Option<String>,
         reply: Sender<Result<WorkflowSession, String>>,
+        deadline: Option<std::time::Instant>,
     },
+}
+
+impl GuiCommand {
+    pub fn is_expired(&self) -> bool {
+        match self {
+            GuiCommand::StartSession { deadline, .. } => deadline
+                .map(|d| std::time::Instant::now() > d)
+                .unwrap_or(false),
+            GuiCommand::PauseSession { deadline, .. } => deadline
+                .map(|d| std::time::Instant::now() > d)
+                .unwrap_or(false),
+            GuiCommand::ResumeSession { deadline, .. } => deadline
+                .map(|d| std::time::Instant::now() > d)
+                .unwrap_or(false),
+            GuiCommand::StopSession { deadline, .. } => deadline
+                .map(|d| std::time::Instant::now() > d)
+                .unwrap_or(false),
+        }
+    }
+
+    pub fn start_session(
+        workflow_id: WorkflowId,
+        reply: Sender<Result<WorkflowSession, String>>,
+    ) -> Self {
+        Self::StartSession {
+            workflow_id,
+            reply,
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(3)),
+        }
+    }
+
+    pub fn pause_session(reply: Sender<Result<(), String>>) -> Self {
+        Self::PauseSession {
+            reply,
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(3)),
+        }
+    }
+
+    pub fn resume_session(reply: Sender<Result<(), String>>) -> Self {
+        Self::ResumeSession {
+            reply,
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(3)),
+        }
+    }
+
+    pub fn stop_session(
+        reason: Option<String>,
+        reply: Sender<Result<WorkflowSession, String>>,
+    ) -> Self {
+        Self::StopSession {
+            reason,
+            reply,
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(3)),
+        }
+    }
 }
 
 pub struct GuiEngine {
@@ -59,8 +118,30 @@ impl GuiEngine {
         while self.running.load(Ordering::SeqCst) {
             // 1. Process any incoming commands non-blockingly
             while let Ok(cmd) = self.command_rx.try_recv() {
+                // Drop expired commands before executing any state mutations (H-20)
+                if cmd.is_expired() {
+                    warn!("Dropping expired GUI command before executing state mutation");
+                    match cmd {
+                        GuiCommand::StartSession { reply, .. } => {
+                            let _ = reply.send(Err("Command expired before execution".to_string()));
+                        }
+                        GuiCommand::PauseSession { reply, .. } => {
+                            let _ = reply.send(Err("Command expired before execution".to_string()));
+                        }
+                        GuiCommand::ResumeSession { reply, .. } => {
+                            let _ = reply.send(Err("Command expired before execution".to_string()));
+                        }
+                        GuiCommand::StopSession { reply, .. } => {
+                            let _ = reply.send(Err("Command expired before execution".to_string()));
+                        }
+                    }
+                    continue;
+                }
+
                 match cmd {
-                    GuiCommand::StartSession { workflow_id, reply } => {
+                    GuiCommand::StartSession {
+                        workflow_id, reply, ..
+                    } => {
                         // If session is already active for this workflow, return it cleanly
                         if let Some(existing) = self.service.active_session() {
                             if existing.workflow_id == workflow_id
@@ -89,7 +170,7 @@ impl GuiEngine {
                             }
                         }
                     }
-                    GuiCommand::PauseSession { reply } => match self.service.pause_session() {
+                    GuiCommand::PauseSession { reply, .. } => match self.service.pause_session() {
                         Ok(()) => {
                             {
                                 let mut st = self.state.lock().unwrap();
@@ -103,22 +184,24 @@ impl GuiEngine {
                             let _ = reply.send(Err(e.to_string()));
                         }
                     },
-                    GuiCommand::ResumeSession { reply } => match self.service.resume_session() {
-                        Ok(()) => {
-                            {
-                                let mut st = self.state.lock().unwrap();
-                                if let Some(ref mut s) = st.active_session {
-                                    s.state = SessionState::Active;
+                    GuiCommand::ResumeSession { reply, .. } => {
+                        match self.service.resume_session() {
+                            Ok(()) => {
+                                {
+                                    let mut st = self.state.lock().unwrap();
+                                    if let Some(ref mut s) = st.active_session {
+                                        s.state = SessionState::Active;
+                                    }
                                 }
+                                active_poll_counter = 10;
+                                let _ = reply.send(Ok(()));
                             }
-                            active_poll_counter = 10;
-                            let _ = reply.send(Ok(()));
+                            Err(e) => {
+                                let _ = reply.send(Err(e.to_string()));
+                            }
                         }
-                        Err(e) => {
-                            let _ = reply.send(Err(e.to_string()));
-                        }
-                    },
-                    GuiCommand::StopSession { reason, reply } => {
+                    }
+                    GuiCommand::StopSession { reason, reply, .. } => {
                         match self.service.cancel_session(reason) {
                             Ok(sess) => {
                                 {

@@ -86,9 +86,10 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         if version > current_version {
             let tx = conn.transaction()?;
             tx.execute_batch(sql)?;
+            let now_rfc3339 = chrono::Utc::now().to_rfc3339();
             tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, datetime('now'))",
-                [version],
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                rusqlite::params![version, now_rfc3339],
             )?;
             tx.commit()?;
             info!("Applied FlowGuard SQLite database migration v{}", version);

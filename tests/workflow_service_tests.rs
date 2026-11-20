@@ -419,3 +419,136 @@ fn test_ws05_afk_and_paused_accounting() {
     ));
     assert_eq!(eval_paused.session.total_paused_seconds, 1);
 }
+
+#[test]
+fn test_h10_collision_resistant_session_ids() {
+    let mock = MockSource::new(sample_obs("code.exe", "main.rs", None, IdleState::Active));
+    let mut wf_repo = InMemoryWorkflowRepository::new();
+    let workflow = create_test_workflow(CommitmentContract::Standard);
+    let wf_id = workflow.id.clone();
+    wf_repo.save(&workflow).unwrap();
+
+    let mut session_ids = std::collections::HashSet::new();
+
+    // Start and cancel multiple sessions rapidly; all session IDs must be unique
+    for _ in 0..100 {
+        let session_repo = InMemorySessionRepository::new();
+        let mut service = WorkflowService::new(
+            Box::new(mock.clone()),
+            Box::new(wf_repo.clone()),
+            Box::new(session_repo),
+            1000,
+        );
+        let session = service.start_session(&wf_id).unwrap();
+        assert!(
+            session_ids.insert(session.id.0.clone()),
+            "Session ID collision detected: {}",
+            session.id.0
+        );
+    }
+}
+
+#[test]
+fn test_h08_h09_atomic_persistence() {
+    use flowguard::application::ports::RepositoryError;
+    use flowguard::domain::workflow::{SessionId, WorkflowSession};
+
+    // A mock session repo that fails saves after a configurable number of successes
+    #[derive(Clone)]
+    struct FailingSessionRepo {
+        inner: InMemorySessionRepository,
+        fail_save: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl flowguard::application::ports::SessionRepository for FailingSessionRepo {
+        fn get(&self, id: &SessionId) -> Result<Option<WorkflowSession>, RepositoryError> {
+            self.inner.get(id)
+        }
+        fn save(&mut self, session: &WorkflowSession) -> Result<(), RepositoryError> {
+            if self.fail_save.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(RepositoryError::Storage("Simulated disk error".to_string()));
+            }
+            self.inner.save(session)
+        }
+        fn record_drift(
+            &mut self,
+            drift: &flowguard::domain::workflow::DriftEvent,
+        ) -> Result<(), RepositoryError> {
+            self.inner.record_drift(drift)
+        }
+        fn list_drifts(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Vec<flowguard::domain::workflow::DriftEvent>, RepositoryError> {
+            self.inner.list_drifts(session_id)
+        }
+        fn list_recent(&self, limit: usize) -> Result<Vec<WorkflowSession>, RepositoryError> {
+            self.inner.list_recent(limit)
+        }
+    }
+
+    let mock = MockSource::new(sample_obs("code.exe", "main.rs", None, IdleState::Active));
+    let mut wf_repo = InMemoryWorkflowRepository::new();
+    let workflow = create_test_workflow(CommitmentContract::Standard);
+    let wf_id = workflow.id.clone();
+    wf_repo.save(&workflow).unwrap();
+
+    let fail_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let repo = FailingSessionRepo {
+        inner: InMemorySessionRepository::new(),
+        fail_save: fail_flag.clone(),
+    };
+
+    let mut service = WorkflowService::new(Box::new(mock), Box::new(wf_repo), Box::new(repo), 1000);
+
+    // 1. Starting session succeeds initially
+    let sess = service.start_session(&wf_id).unwrap();
+    assert_eq!(sess.state, SessionState::Active);
+
+    // 2. Enable failure mode: pause_session must fail AND leave active_session unchanged (still Active)
+    fail_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    let pause_res = service.pause_session();
+    assert!(
+        pause_res.is_err(),
+        "Expected pause to fail due to storage error"
+    );
+    assert_eq!(
+        service.active_session().unwrap().state,
+        SessionState::Active,
+        "Active session must remain Active if persistence failed"
+    );
+
+    // 3. cancel_session must fail AND retain session in memory
+    let cancel_res = service.cancel_session(None);
+    assert!(
+        cancel_res.is_err(),
+        "Expected cancel to fail due to storage error"
+    );
+    assert!(
+        service.active_session().is_some(),
+        "Active session must not be wiped from memory if persistence failed"
+    );
+    assert_eq!(
+        service.active_session().unwrap().state,
+        SessionState::Active
+    );
+}
+
+#[test]
+fn test_h20_expired_command_cancellation() {
+    use flowguard::presentation::gui::engine::GuiCommand;
+    use std::time::Duration;
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    // 1. Fresh command is not expired
+    let fresh_cmd = GuiCommand::start_session(WorkflowId::new("wf-test"), tx.clone());
+    assert!(!fresh_cmd.is_expired());
+
+    // 2. Command with past deadline is expired
+    let expired_cmd = GuiCommand::StartSession {
+        workflow_id: WorkflowId::new("wf-test"),
+        reply: tx,
+        deadline: Some(std::time::Instant::now() - Duration::from_millis(50)),
+    };
+    assert!(expired_cmd.is_expired());
+}
