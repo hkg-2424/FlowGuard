@@ -589,6 +589,44 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
                 Err(_) => respond_error(request, 504, "Resume timed out"),
             }
         }
+        (&Method::Post, "/api/session/focus-workflow-app") => {
+            let (allowed_apps, allowed_titles) = {
+                let st = ctx.gui_state.lock().unwrap();
+                if let Some(ref wf) = st.active_workflow {
+                    let mut apps = Vec::new();
+                    let mut titles = Vec::new();
+                    for r in &wf.rules {
+                        if r.is_enabled && r.effect == crate::domain::workflow::RuleEffect::Allow {
+                            match &r.matcher {
+                                crate::domain::workflow::RuleMatcher::ApplicationName(app) => {
+                                    apps.push(app.clone());
+                                }
+                                crate::domain::workflow::RuleMatcher::DomainPattern(pat) => {
+                                    titles.push(pat.clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    (apps, titles)
+                } else {
+                    (Vec::new(), Vec::new())
+                }
+            };
+
+            let switched =
+                crate::infrastructure::native_windows::api::force_pull_back_to_allowed_app(
+                    &allowed_apps,
+                    &allowed_titles,
+                );
+
+            let json = serde_json::json!({
+                "status": "ok",
+                "switched_to": switched
+            })
+            .to_string();
+            respond_json(request, 200, &json);
+        }
         (&Method::Post, "/api/session/stop") => {
             let body = match read_bounded_body(&mut request) {
                 Ok(b) => b,

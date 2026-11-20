@@ -292,7 +292,47 @@ impl GuiEngine {
                             );
 
                             if is_intervention && !was_intervention {
-                                crate::infrastructure::native_windows::api::alert_focus_violation();
+                                let (allowed_apps, allowed_titles, wf_name) = {
+                                    let st = self.state.lock().unwrap();
+                                    if let Some(ref wf) = st.active_workflow {
+                                        let mut apps = Vec::new();
+                                        let mut titles = Vec::new();
+                                        for r in &wf.rules {
+                                            if r.is_enabled
+                                                && r.effect
+                                                    == crate::domain::workflow::RuleEffect::Allow
+                                            {
+                                                match &r.matcher {
+                                                    crate::domain::workflow::RuleMatcher::ApplicationName(app) => {
+                                                        apps.push(app.clone());
+                                                    }
+                                                    crate::domain::workflow::RuleMatcher::DomainPattern(pat) => {
+                                                        titles.push(pat.clone());
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                        (apps, titles, wf.name.clone())
+                                    } else {
+                                        (Vec::new(), Vec::new(), "Focus Workflow".to_string())
+                                    }
+                                };
+
+                                if let Some(switched_app) = crate::infrastructure::native_windows::api::force_pull_back_to_allowed_app(
+                                    &allowed_apps,
+                                    &allowed_titles,
+                                ) {
+                                    crate::infrastructure::native_windows::api::show_desktop_notification(
+                                        "⛔ FlowGuard Focus Boundary Enforced",
+                                        &format!("You broke out of your workflow! FlowGuard forcefully returned you to {}.", switched_app),
+                                    );
+                                } else {
+                                    crate::infrastructure::native_windows::api::show_desktop_notification(
+                                        "⛔ FlowGuard Focus Boundary Enforced",
+                                        &format!("You broke out of '{}'! Return to your focus task now.", wf_name),
+                                    );
+                                }
                             } else if is_intervention {
                                 crate::infrastructure::native_windows::api::play_system_alert();
                             }

@@ -45,6 +45,7 @@ mod win32 {
         pub fn FlashWindow(hWnd: HWND, bInvert: BOOL) -> BOOL;
         pub fn SetForegroundWindow(hWnd: HWND) -> BOOL;
         pub fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
+        pub fn SwitchToThisWindow(hWnd: HWND, fAltTab: BOOL);
     }
 
     #[link(name = "kernel32")]
@@ -366,6 +367,174 @@ pub fn play_system_alert() {}
 
 /// Plays an urgent warning sound and brings the FlowGuard desktop window to the front
 /// (or flashes its taskbar button in amber) to actively confront the user when grace expires.
+#[repr(C)]
+struct TargetWindowSearch<'a> {
+    allowed_apps: &'a [String],
+    allowed_titles: &'a [String],
+    found_hwnd: Option<win32::HWND>,
+    found_app: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn find_allowed_app_callback(
+    hwnd: win32::HWND,
+    lparam: win32::LPARAM,
+) -> win32::BOOL {
+    if win32::IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+
+    let search = &mut *(lparam as *mut TargetWindowSearch);
+
+    // 1. Get window title
+    let mut title_buf = [0u16; 512];
+    let title_len = win32::GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
+    let title = if title_len > 0 {
+        String::from_utf16_lossy(&title_buf[..title_len as usize])
+    } else {
+        String::new()
+    };
+
+    // Ignore FlowGuard's own window
+    if title.contains("FlowGuard") || title.contains("FOCUS INTERVENTION REQUIRED") {
+        return 1;
+    }
+
+    // 2. Get process image name
+    let mut pid: win32::DWORD = 0;
+    win32::GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == 0 {
+        return 1;
+    }
+
+    let handle = win32::OpenProcess(win32::PROCESS_QUERY_LIMITED_INFORMATION, win32::FALSE, pid);
+    if handle.is_null() {
+        return 1;
+    }
+
+    let mut exe_buf = [0u16; 512];
+    let mut exe_len = exe_buf.len() as win32::DWORD;
+    let success = win32::QueryFullProcessImageNameW(handle, 0, exe_buf.as_mut_ptr(), &mut exe_len);
+    win32::CloseHandle(handle);
+
+    if success == 0 || exe_len == 0 {
+        return 1;
+    }
+
+    let full_path = String::from_utf16_lossy(&exe_buf[..exe_len as usize]);
+    let process_name = std::path::Path::new(&full_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let is_browser = crate::domain::workflow::engine::is_browser_app(&process_name);
+
+    // Check if process_name matches any allowed app
+    let matches_app = search.allowed_apps.iter().any(|allowed| {
+        let clean_allowed = allowed.trim().to_lowercase();
+        crate::domain::workflow::engine::app_matches(&process_name, Some(&title), &clean_allowed)
+    });
+
+    if matches_app {
+        // If it's a browser, check if we have domain/title constraints
+        if is_browser && !search.allowed_titles.is_empty() {
+            let title_lower = title.to_lowercase();
+            let matches_title = search.allowed_titles.iter().any(|pat| {
+                crate::domain::workflow::engine::title_matches_domain(&title_lower, pat)
+            });
+            if matches_title {
+                search.found_hwnd = Some(hwnd);
+                search.found_app = Some(process_name);
+                return 0; // stop enumeration
+            }
+        } else {
+            // Dedicated desktop application (e.g. VS Code, Terminal, Obsidian, Word, etc.)
+            search.found_hwnd = Some(hwnd);
+            search.found_app = Some(process_name);
+            return 0; // stop enumeration
+        }
+    }
+
+    1 // continue enumeration
+}
+
+/// Forcefully switches desktop focus to an open window belonging to the allowed workflow applications,
+/// pulling the user back into their productive context when a focus boundary is violated.
+#[cfg(target_os = "windows")]
+pub fn force_pull_back_to_allowed_app(
+    allowed_apps: &[String],
+    allowed_titles: &[String],
+) -> Option<String> {
+    unsafe {
+        // 1. Hardware alert sound
+        let _ = win32::MessageBeep(0x0000_0030); // MB_ICONWARNING
+
+        // 2. Search for open window matching the active workflow
+        let mut search = TargetWindowSearch {
+            allowed_apps,
+            allowed_titles,
+            found_hwnd: None,
+            found_app: None,
+        };
+
+        win32::EnumWindows(
+            Some(find_allowed_app_callback),
+            &mut search as *mut TargetWindowSearch as win32::LPARAM,
+        );
+
+        if let Some(hwnd) = search.found_hwnd {
+            win32::ShowWindow(hwnd, 9); // SW_RESTORE
+            win32::SetForegroundWindow(hwnd);
+            win32::SwitchToThisWindow(hwnd, 1);
+            win32::FlashWindow(hwnd, 1);
+            return search.found_app;
+        }
+
+        // Fallback: If no workflow app is open on the desktop, bring FlowGuard to the front
+        win32::EnumWindows(Some(find_and_flash_flowguard_window), 0);
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn force_pull_back_to_allowed_app(
+    _allowed_apps: &[String],
+    _allowed_titles: &[String],
+) -> Option<String> {
+    None
+}
+
+/// Dispatches a native Windows Toast notification so the user sees the intervention
+/// banner directly over their active workspace.
+#[cfg(target_os = "windows")]
+pub fn show_desktop_notification(title: &str, message: &str) {
+    use std::os::windows::process::CommandExt;
+    let title_owned = title.to_string();
+    let msg_owned = message.to_string();
+    std::thread::spawn(move || {
+        let script = format!(
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
+             $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+             $textNodes = $template.GetElementsByTagName('text'); \
+             $textNodes.Item(0).AppendChild($template.CreateTextNode('{}')) | Out-Null; \
+             $textNodes.Item(1).AppendChild($template.CreateTextNode('{}')) | Out-Null; \
+             $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('FlowGuard Focus Assistant'); \
+             $toast = [Windows.UI.Notifications.ToastNotification]::new($template); \
+             $notifier.Show($toast);",
+            title_owned.replace('\'', "''"),
+            msg_owned.replace('\'', "''")
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn();
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn show_desktop_notification(_title: &str, _message: &str) {}
+
 #[cfg(target_os = "windows")]
 pub fn alert_focus_violation() {
     unsafe {

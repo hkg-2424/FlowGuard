@@ -416,9 +416,9 @@ impl RuleEngine {
             .window_title
             .as_deref()
             .map(|t| {
-                t.contains("FlowGuard — Focus")
-                    || t.contains("FlowGuard - Focus")
-                    || t.starts_with("FlowGuard")
+                t.contains("FlowGuard")
+                    || t.contains("FOCUS INTERVENTION REQUIRED")
+                    || t.contains("Return to Flow")
             })
             .unwrap_or(false);
         let is_flowguard_url = observation

@@ -1432,6 +1432,7 @@ function dismissInterventionModal() {
   if (modal) modal.classList.add('hidden');
   syncModalBodyLock();
   showToast('Returning to allowed focus tools...', 'info');
+  fetch('/api/session/focus-workflow-app', { method: 'POST' }).catch(() => {});
 }
 
 function handleInterventionGiveUp() {
