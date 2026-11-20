@@ -458,7 +458,13 @@ fn test_wf08_session_lifecycle_and_commitment_contracts() {
     assert_eq!(unbreak_err, SessionError::CannotBreakUnbreakableWorkflow);
     assert_eq!(unbreakable_session.state, SessionState::Active);
 
-    // Natural completion works normally
+    // C-02: Early completion before target duration is also strictly rejected
+    let complete_err = unbreakable_session.complete().unwrap_err();
+    assert_eq!(complete_err, SessionError::CannotBreakUnbreakableWorkflow);
+    assert_eq!(unbreakable_session.state, SessionState::Active);
+
+    // Natural completion works once target duration has elapsed (H-19)
+    unbreakable_session.total_focus_seconds = 3600;
     unbreakable_session.complete().unwrap();
     assert_eq!(unbreakable_session.state, SessionState::Completed);
 }
@@ -634,5 +640,194 @@ fn test_wf11_friendly_app_names_and_aliases() {
     assert!(
         dec2.is_allowed(),
         "Antigravity title must match 'Antigravity'"
+    );
+}
+
+#[test]
+fn test_h24_h25_stale_observations_pause_timer_without_resetting_or_intervening() {
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+    let wf_id = WorkflowId::new("wf-study");
+    let workflow = Workflow::new(wf_id.clone(), "Study").with_rule(WorkflowRule {
+        id: RuleId::new("rule-code"),
+        workflow_id: wf_id,
+        description: "Allow Code".into(),
+        scope: RuleScope::Application,
+        matcher: RuleMatcher::ApplicationName("code.exe".into()),
+        effect: RuleEffect::Allow,
+        priority_weight: 10,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    // 1. Initial drift into Discord starts grace timer (30s)
+    let obs_discord = sample_observation("discord.exe", "Discord", None);
+    let dec1 = engine.evaluate(&obs_discord, &workflow, &mut timer, now);
+    assert!(dec1.is_violation());
+    assert!(timer.is_active());
+    let ep_id = timer.current_episode_id();
+
+    // 2. Stale observation arrives (H-24, H-25)
+    let mut obs_stale = sample_observation("discord.exe", "Discord", None);
+    obs_stale.window_freshness = FreshnessState::Stale;
+    let dec_stale = engine.evaluate(&obs_stale, &workflow, &mut timer, now);
+
+    // Must return ObservationUnavailable and PAUSE timer, NOT cancel/reset it!
+    assert!(dec_stale.is_unavailable());
+    assert!(
+        timer.is_active(),
+        "Timer must remain active (paused) during stale observation"
+    );
+    assert_eq!(
+        timer.current_episode_id(),
+        ep_id,
+        "Episode ID must be preserved"
+    );
+
+    // 3. Resuming fresh violation continues the same episode without reset
+    let dec3 = engine.evaluate(&obs_discord, &workflow, &mut timer, now);
+    assert!(dec3.is_violation());
+    assert_eq!(timer.current_episode_id(), ep_id);
+
+    // 4. Stale browser tab in browser window also pauses policy (H-25)
+    let mut obs_browser_stale =
+        sample_observation("chrome.exe", "Google Chrome", Some("https://reddit.com"));
+    obs_browser_stale.browser_freshness = FreshnessState::Stale;
+    let dec_b_stale = engine.evaluate(&obs_browser_stale, &workflow, &mut timer, now);
+    assert!(dec_b_stale.is_unavailable());
+}
+
+#[test]
+fn test_h26_browser_application_gating_only_checks_active_allow_domain_rules() {
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+    let wf_id = WorkflowId::new("wf-research");
+
+    // Workflow has:
+    // - Chrome application -> Allow
+    // - reddit.com -> Restrict (Domain scope)
+    // There are NO active Allow domain rules!
+    let workflow = Workflow::new(wf_id.clone(), "Research")
+        .with_rule(WorkflowRule {
+            id: RuleId::new("rule-chrome"),
+            workflow_id: wf_id.clone(),
+            description: "Allow Chrome".into(),
+            scope: RuleScope::Application,
+            matcher: RuleMatcher::ApplicationName("chrome.exe".into()),
+            effect: RuleEffect::Allow,
+            priority_weight: 10,
+            custom_grace_seconds: None,
+            is_enabled: true,
+            expires_at: None,
+        })
+        .with_rule(WorkflowRule {
+            id: RuleId::new("rule-restrict-reddit"),
+            workflow_id: wf_id,
+            description: "Restrict Reddit".into(),
+            scope: RuleScope::Domain,
+            matcher: RuleMatcher::DomainPattern("reddit.com".into()),
+            effect: RuleEffect::Restrict,
+            priority_weight: 10,
+            custom_grace_seconds: Some(15),
+            is_enabled: true,
+            expires_at: None,
+        });
+
+    // 1. Browsing wikipedia.org in Chrome:
+    // With H-26 fixed, the presence of reddit.com -> Restrict does NOT turn Chrome into a broken allowlist!
+    // Wikipedia in Chrome is allowed by the Chrome application rule.
+    let obs_wiki = sample_observation(
+        "chrome.exe",
+        "Wikipedia, the free encyclopedia - Google Chrome",
+        Some("https://en.wikipedia.org/wiki/Rust"),
+    );
+    let dec_wiki = engine.evaluate(&obs_wiki, &workflow, &mut timer, now);
+    assert!(
+        dec_wiki.is_allowed(),
+        "Wikipedia must be allowed under Chrome when only Restrict domain rules exist"
+    );
+
+    // 2. Browsing reddit.com in Chrome:
+    // Domain rule (Restrict, scope 400) beats Application rule (Allow, scope 200)!
+    let obs_reddit = sample_observation(
+        "chrome.exe",
+        "Reddit - Dive into anything - Google Chrome",
+        Some("https://www.reddit.com/r/rust"),
+    );
+    let dec_reddit = engine.evaluate(&obs_reddit, &workflow, &mut timer, now);
+    assert!(
+        dec_reddit.is_violation(),
+        "Reddit must be restricted because Domain scope beats Application scope"
+    );
+}
+
+#[test]
+fn test_h27_short_form_media_policy_precedence_user_allow_exception_overrides() {
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+    let wf_id = WorkflowId::new("wf-study");
+
+    // Workflow with an explicit user ExactResource / Canonical Allow exception
+    // for a specific educational YouTube Short!
+    let allowed_video_id = "dQw4w9WgXcQ";
+    let workflow = Workflow::new(wf_id.clone(), "Study").with_rule(WorkflowRule {
+        id: RuleId::new("rule-allow-educational-short"),
+        workflow_id: wf_id,
+        description: "Allow Specific Educational Short".into(),
+        scope: RuleScope::ExactResource,
+        matcher: RuleMatcher::Canonical(CanonicalResource::YouTubeVideo {
+            video_id: allowed_video_id.into(),
+        }),
+        effect: RuleEffect::Allow,
+        priority_weight: 100,
+        custom_grace_seconds: None,
+        is_enabled: true,
+        expires_at: None,
+    });
+
+    // 1. User visits the specifically allowed Short -> Explicit user Allow rule must override! (H-27)
+    let allowed_url = format!("https://www.youtube.com/shorts/{allowed_video_id}");
+    let obs_allowed_short = sample_observation(
+        "chrome.exe",
+        "Educational Short - YouTube",
+        Some(&allowed_url),
+    );
+    let dec_allowed = engine.evaluate(&obs_allowed_short, &workflow, &mut timer, now);
+    assert!(
+        dec_allowed.is_allowed(),
+        "Explicit user ExactResource Allow rule must override short-form restriction"
+    );
+
+    // 2. User visits another unallowed YouTube Short -> Restrict shorts rule applies
+    let obs_unallowed_short = sample_observation(
+        "chrome.exe",
+        "Viral Meme #shorts - YouTube",
+        Some("https://www.youtube.com/shorts/random12345"),
+    );
+    let dec_unallowed = engine.evaluate(&obs_unallowed_short, &workflow, &mut timer, now);
+    assert!(
+        dec_unallowed.is_violation(),
+        "Generic YouTube Short without user exception must be restricted"
+    );
+}
+
+#[test]
+fn test_h17_flowguard_control_surface_neutral() {
+    let engine = RuleEngine::new();
+    let mut timer = GracePeriodTimer::new();
+    let now = Utc::now();
+    let wf_id = WorkflowId::new("wf-strict");
+    let workflow = Workflow::new(wf_id, "Strict Deny-All"); // default is Restrict
+
+    // FlowGuard desktop window or localhost URL must be neutral (Ignored, pauses timer)
+    let obs_fg = sample_observation("flowguard.exe", "FlowGuard — Focus Session", None);
+    let dec = engine.evaluate(&obs_fg, &workflow, &mut timer, now);
+    assert!(
+        matches!(dec, PolicyDecision::Ignored { reason } if reason.contains("FlowGuard control surface")),
+        "FlowGuard control surface must be evaluated as neutral Ignored"
     );
 }

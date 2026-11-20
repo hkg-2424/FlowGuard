@@ -222,7 +222,8 @@ fn test_sqlite_session_and_drift_logging() {
     assert_eq!(drifts[1].target_name, "youtube.com");
     assert_eq!(drifts[1].resolution, DriftResolution::Intervened);
 
-    // 5. Update session to completed
+    // 5. Update session to completed (target duration reached)
+    session.total_focus_seconds = 3600;
     session.complete().unwrap();
     session_repo.save(&session).unwrap();
 

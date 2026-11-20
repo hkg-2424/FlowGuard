@@ -45,6 +45,21 @@ impl PolicyDecision {
             PolicyDecision::GracePeriod { .. } | PolicyDecision::InterventionRequired { .. }
         )
     }
+
+    /// Returns true if this observation is unavailable, stale, or lacks sufficient visibility (H-24, H-25).
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, PolicyDecision::ObservationUnavailable { .. })
+    }
+
+    /// Returns true if the session is currently in an unexpired grace period.
+    pub fn is_grace_period(&self) -> bool {
+        matches!(self, PolicyDecision::GracePeriod { .. })
+    }
+
+    /// Returns true if grace period has expired and an active intervention is required.
+    pub fn is_intervention_required(&self) -> bool {
+        matches!(self, PolicyDecision::InterventionRequired { .. })
+    }
 }
 
 /// Structured explanation of why a policy decision was reached.

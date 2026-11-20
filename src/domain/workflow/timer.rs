@@ -37,6 +37,7 @@ struct ActiveViolation {
     intervened: bool,
     paused_at: Option<Instant>,
     total_paused_duration: Duration,
+    episode_id: u64,
 }
 
 /// Monotonic, drift-resilient grace period timer.
@@ -49,6 +50,7 @@ struct ActiveViolation {
 pub struct GracePeriodTimer {
     active_violation: Option<ActiveViolation>,
     last_resolution: Option<DriftResolution>,
+    next_episode_id: u64,
 }
 
 impl GracePeriodTimer {
@@ -56,6 +58,7 @@ impl GracePeriodTimer {
         Self {
             active_violation: None,
             last_resolution: None,
+            next_episode_id: 0,
         }
     }
 
@@ -63,7 +66,7 @@ impl GracePeriodTimer {
     ///
     /// Invariant: Once an unallowed activity begins, switching between different unallowed
     /// applications (e.g. Discord -> Steam -> YouTube) does NOT reset the grace timer.
-    /// The 30-second countdown continues monotonically until the user returns to an allowed app.
+    /// The countdown continues monotonically until the user returns to an allowed app.
     pub fn tick(&mut self, rule_id: &RuleId, target_name: &str, grace_seconds: u32) -> TimerStatus {
         let now = Instant::now();
         let grace_duration = Duration::from_secs(grace_seconds as u64);
@@ -79,10 +82,14 @@ impl GracePeriodTimer {
                 if let Some(paused_time) = v.paused_at.take() {
                     v.total_paused_duration += now.saturating_duration_since(paused_time);
                 }
+
+                // H-28: Stricter grace duration wins when switching unallowed rules
+                v.grace_duration = v.grace_duration.min(grace_duration);
                 v
             }
             None => {
                 // New violation episode started
+                self.next_episode_id += 1;
                 self.active_violation = Some(ActiveViolation {
                     rule_id: rule_id.clone(),
                     target_name: target_name.to_string(),
@@ -91,6 +98,7 @@ impl GracePeriodTimer {
                     intervened: false,
                     paused_at: None,
                     total_paused_duration: Duration::ZERO,
+                    episode_id: self.next_episode_id,
                 });
                 self.active_violation.as_mut().unwrap()
             }
@@ -103,7 +111,7 @@ impl GracePeriodTimer {
             let remaining = (violation.grace_duration - active_elapsed).as_secs() as u32;
             TimerStatus::GracePeriod {
                 remaining_seconds: remaining,
-                total_grace_seconds: grace_seconds,
+                total_grace_seconds: violation.grace_duration.as_secs() as u32,
             }
         } else {
             let already_intervened = violation.intervened;
@@ -126,7 +134,11 @@ impl GracePeriodTimer {
         let raw_elapsed = now.saturating_duration_since(violation.started_at);
         let active_elapsed = raw_elapsed.saturating_sub(violation.total_paused_duration);
 
-        let res = if violation.intervened {
+        // H-28: Evaluate expiry during cancellation!
+        // If polling skipped the expiry moment and the user returns after the deadline,
+        // it must be classified as Intervened, NOT SelfCorrected.
+        let is_expired = violation.intervened || active_elapsed >= violation.grace_duration;
+        let res = if is_expired {
             DriftResolution::Intervened
         } else {
             DriftResolution::SelfCorrected {
@@ -140,6 +152,24 @@ impl GracePeriodTimer {
     /// Takes the last resolution recorded when an active violation was cancelled.
     pub fn take_last_resolution(&mut self) -> Option<DriftResolution> {
         self.last_resolution.take()
+    }
+
+    /// Returns the monotonic episode ID of the active violation, if one is running (H-31).
+    pub fn current_episode_id(&self) -> Option<u64> {
+        self.active_violation.as_ref().map(|v| v.episode_id)
+    }
+
+    /// Returns true if the active violation has already expired and triggered an intervention (H-31).
+    pub fn is_intervened(&self) -> bool {
+        self.active_violation
+            .as_ref()
+            .map(|v| v.intervened)
+            .unwrap_or(false)
+    }
+
+    /// Returns the effective grace duration for the active violation, if any.
+    pub fn active_grace_duration(&self) -> Option<Duration> {
+        self.active_violation.as_ref().map(|v| v.grace_duration)
     }
 
     /// Suspends the timer during AFK or system sleep without leaking elapsed time.
@@ -216,5 +246,67 @@ mod tests {
         let res = timer.cancel();
         assert!(matches!(res, Some(DriftResolution::SelfCorrected { .. })));
         assert!(!timer.is_active());
+    }
+
+    #[test]
+    fn test_h28_stricter_grace_duration_applied_on_rule_switch() {
+        let mut timer = GracePeriodTimer::new();
+        let rule1 = RuleId::new("rule-30s");
+        let rule2 = RuleId::new("rule-10s");
+
+        // 1. Initial drift with 30s grace
+        timer.tick(&rule1, "discord.exe", 30);
+        assert_eq!(timer.active_grace_duration(), Some(Duration::from_secs(30)));
+
+        // 2. Switch to rule with stricter 10s grace -> must update effective duration
+        let s2 = timer.tick(&rule2, "steam.exe", 10);
+        assert_eq!(timer.active_grace_duration(), Some(Duration::from_secs(10)));
+        match s2 {
+            TimerStatus::GracePeriod {
+                total_grace_seconds,
+                remaining_seconds,
+            } => {
+                assert_eq!(total_grace_seconds, 10);
+                assert!(remaining_seconds <= 10);
+            }
+            _ => panic!("Expected GracePeriod"),
+        }
+    }
+
+    #[test]
+    fn test_h28_expiry_evaluated_during_cancellation_when_tick_missed() {
+        let mut timer = GracePeriodTimer::new();
+        let rule = RuleId::new("rule-instant");
+
+        // 1. Drift with 0-second grace (immediate expiry)
+        let s = timer.tick(&rule, "game.exe", 0);
+        assert!(matches!(s, TimerStatus::Expired { .. }));
+
+        // 2. Cancellation must evaluate to Intervened, not SelfCorrected
+        let res = timer.cancel();
+        assert_eq!(res, Some(DriftResolution::Intervened));
+    }
+
+    #[test]
+    fn test_h31_episode_id_tracking() {
+        let mut timer = GracePeriodTimer::new();
+        let rule = RuleId::new("rule-1");
+
+        assert_eq!(timer.current_episode_id(), None);
+
+        timer.tick(&rule, "target1", 30);
+        let ep1 = timer.current_episode_id();
+        assert_eq!(ep1, Some(1));
+
+        // Switching target in same episode keeps episode ID
+        timer.tick(&rule, "target2", 30);
+        assert_eq!(timer.current_episode_id(), Some(1));
+
+        timer.cancel();
+        assert_eq!(timer.current_episode_id(), None);
+
+        // Next violation gets next episode ID
+        timer.tick(&rule, "target3", 30);
+        assert_eq!(timer.current_episode_id(), Some(2));
     }
 }
