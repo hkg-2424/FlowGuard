@@ -48,11 +48,12 @@ pub fn launch_desktop_gui(
     let mut wf_repo = SqliteWorkflowRepository::new(db.clone());
     seed::seed_default_workflows_if_empty(&mut wf_repo);
 
-    // Clean up any dangling unclosed sessions from previous unclean shutdowns
+    // Clean up any dangling unclosed sessions from previous unclean shutdowns (H-12: RFC3339 timestamp)
     if let Ok(conn) = db.lock() {
+        let now_rfc3339 = chrono::Utc::now().to_rfc3339();
         let _ = conn.execute(
-            "UPDATE sessions SET state = 'Interrupted', end_time = datetime('now') WHERE state IN ('Active', 'Paused')",
-            [],
+            "UPDATE sessions SET state = 'Interrupted', end_time = ?1 WHERE state IN ('Active', 'Paused')",
+            rusqlite::params![now_rfc3339],
         );
     }
 

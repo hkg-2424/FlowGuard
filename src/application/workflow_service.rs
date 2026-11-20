@@ -45,6 +45,35 @@ pub struct SessionEvaluation {
     pub pull_back_event: Option<DriftEvent>,
 }
 
+#[derive(Debug, Clone)]
+struct ActiveDriftEpisode {
+    target_name: String,
+    started_at: chrono::DateTime<Utc>,
+    intervened: bool,
+}
+
+/// Generates a collision-resistant Session ID using monotonic microsecond timestamps,
+/// process ID, an atomic counter, and pseudo-random hash entropy (H-10).
+fn generate_session_id() -> SessionId {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let micros = Utc::now().timestamp_micros();
+    let mut x = (micros as u64) ^ ((pid as u64) << 32) ^ (count << 16) ^ 0xa0761d6478bd642f;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    let r = x.wrapping_mul(0x2545F4914F6CDD1D);
+    SessionId::new(format!(
+        "sess_{}_{}_{:04x}_{:08x}",
+        micros,
+        pid,
+        count % 0x10000,
+        (r & 0xffffffff) as u32
+    ))
+}
+
 /// Core application orchestrator managing workflow lifecycle, live activity
 /// observation polling, rule evaluation, and temporal accounting.
 pub struct WorkflowService {
@@ -58,6 +87,12 @@ pub struct WorkflowService {
     poll_interval: Duration,
     in_active_intervention: bool,
     last_tick_time: Option<std::time::Instant>,
+    current_drift_episode: Option<ActiveDriftEpisode>,
+    subsecond_focus_ms: u64,
+    subsecond_grace_ms: u64,
+    subsecond_distraction_ms: u64,
+    subsecond_paused_ms: u64,
+    subsecond_afk_ms: u64,
 }
 
 impl WorkflowService {
@@ -78,6 +113,12 @@ impl WorkflowService {
             poll_interval: Duration::from_millis(poll_interval_ms.max(500)),
             in_active_intervention: false,
             last_tick_time: None,
+            current_drift_episode: None,
+            subsecond_focus_ms: 0,
+            subsecond_grace_ms: 0,
+            subsecond_distraction_ms: 0,
+            subsecond_paused_ms: 0,
+            subsecond_afk_ms: 0,
         }
     }
 
@@ -94,12 +135,22 @@ impl WorkflowService {
             }
         }
 
+        // Check storage for dangling active/paused sessions across instances (H-13)
+        if let Ok(recent) = self.session_repo.list_recent(5) {
+            for s in recent {
+                if s.state == SessionState::Active || s.state == SessionState::Paused {
+                    return Err(WorkflowServiceError::ActiveSessionAlreadyExists(s.id));
+                }
+            }
+        }
+
         let workflow = self
             .workflow_repo
             .get(workflow_id)?
             .ok_or_else(|| WorkflowServiceError::WorkflowNotFound(workflow_id.clone()))?;
 
-        let session_id = SessionId::new(format!("sess_{}", Utc::now().timestamp_millis()));
+        // Generate collision-resistant monotonic+random session ID (H-10)
+        let session_id = generate_session_id();
         let mut session = WorkflowSession::new(
             session_id,
             workflow.id.clone(),
@@ -107,10 +158,19 @@ impl WorkflowService {
         );
 
         session.start()?;
+
+        // Persist to storage FIRST before mutating in-memory service state (H-08, H-09)
+        self.session_repo.save(&session)?;
+
         self.timer.reset();
         self.in_active_intervention = false;
+        self.current_drift_episode = None;
         self.last_tick_time = Some(std::time::Instant::now());
-        self.session_repo.save(&session)?;
+        self.subsecond_focus_ms = 0;
+        self.subsecond_grace_ms = 0;
+        self.subsecond_distraction_ms = 0;
+        self.subsecond_paused_ms = 0;
+        self.subsecond_afk_ms = 0;
 
         self.active_workflow = Some(workflow);
         self.active_session = Some(session.clone());
@@ -125,30 +185,44 @@ impl WorkflowService {
 
     /// Pauses the active session.
     pub fn pause_session(&mut self) -> Result<(), WorkflowServiceError> {
-        let session = self
-            .active_session
-            .as_mut()
-            .ok_or(WorkflowServiceError::NoActiveSession)?;
+        let (session_id, mut candidate) = {
+            let session = self
+                .active_session
+                .as_ref()
+                .ok_or(WorkflowServiceError::NoActiveSession)?;
+            (session.id.clone(), session.clone())
+        };
 
-        session.pause()?;
+        // Apply transition to a clone and persist first (H-09)
+        candidate.pause()?;
+        self.session_repo.save(&candidate)?;
+
+        // Atomically update in-memory state upon persistence success
+        self.active_session = Some(candidate);
         self.timer.pause();
         self.last_tick_time = None;
-        self.session_repo.save(session)?;
-        info!("Paused workflow session '{}'", session.id);
+        info!("Paused workflow session '{}'", session_id);
         Ok(())
     }
 
     /// Resumes the paused session.
     pub fn resume_session(&mut self) -> Result<(), WorkflowServiceError> {
-        let session = self
-            .active_session
-            .as_mut()
-            .ok_or(WorkflowServiceError::NoActiveSession)?;
+        let (session_id, mut candidate) = {
+            let session = self
+                .active_session
+                .as_ref()
+                .ok_or(WorkflowServiceError::NoActiveSession)?;
+            (session.id.clone(), session.clone())
+        };
 
-        session.resume()?;
+        // Apply transition to a clone and persist first (H-09)
+        candidate.resume()?;
+        self.session_repo.save(&candidate)?;
+
+        // Atomically update in-memory state upon persistence success
+        self.active_session = Some(candidate);
         self.last_tick_time = Some(std::time::Instant::now());
-        self.session_repo.save(session)?;
-        info!("Resumed workflow session '{}'", session.id);
+        info!("Resumed workflow session '{}'", session_id);
         Ok(())
     }
 
@@ -157,43 +231,104 @@ impl WorkflowService {
         &mut self,
         reason: Option<String>,
     ) -> Result<WorkflowSession, WorkflowServiceError> {
-        let mut session = self
+        let session = self
             .active_session
-            .take()
+            .as_ref()
             .ok_or(WorkflowServiceError::NoActiveSession)?;
 
-        if let Err(e) = session.cancel(reason) {
-            // Restore session if cancellation rejected
-            self.active_session = Some(session);
-            return Err(WorkflowServiceError::Session(e));
+        // Apply transition to a clone and persist first (H-09)
+        let mut candidate = session.clone();
+        candidate
+            .cancel(reason)
+            .map_err(WorkflowServiceError::Session)?;
+
+        // Seal any active drift episode before session closure (H-30)
+        if let Some(ep) = self.current_drift_episode.take() {
+            let now = Utc::now();
+            let duration_seconds = now
+                .signed_duration_since(ep.started_at)
+                .num_seconds()
+                .max(0) as u32;
+            let resolution = if ep.intervened {
+                DriftResolution::Intervened
+            } else {
+                DriftResolution::SelfCorrected {
+                    recovery_seconds: duration_seconds,
+                }
+            };
+            let event = DriftEvent {
+                session_id: candidate.id.clone(),
+                target_name: ep.target_name,
+                duration_seconds,
+                resolution,
+                timestamp: now,
+            };
+            let _ = self.session_repo.record_drift(&event);
         }
 
+        self.session_repo.save(&candidate)?;
+
+        // Atomically clear active session from memory upon persistence success
         self.timer.reset();
         self.in_active_intervention = false;
+        self.current_drift_episode = None;
         self.last_tick_time = None;
-        self.session_repo.save(&session)?;
+        self.active_session = None;
         self.active_workflow = None;
 
-        info!("Cancelled workflow session '{}'", session.id);
-        Ok(session)
+        info!("Cancelled workflow session '{}'", candidate.id);
+        Ok(candidate)
     }
 
     /// Completes the active session naturally upon goal achievement.
     pub fn complete_session(&mut self) -> Result<WorkflowSession, WorkflowServiceError> {
-        let mut session = self
+        let session = self
             .active_session
-            .take()
+            .as_ref()
             .ok_or(WorkflowServiceError::NoActiveSession)?;
 
-        session.complete()?;
+        // Apply transition to a clone and persist first (H-09)
+        let mut candidate = session.clone();
+        candidate
+            .complete()
+            .map_err(WorkflowServiceError::Session)?;
+
+        // Seal any active drift episode before session closure (H-30)
+        if let Some(ep) = self.current_drift_episode.take() {
+            let now = Utc::now();
+            let duration_seconds = now
+                .signed_duration_since(ep.started_at)
+                .num_seconds()
+                .max(0) as u32;
+            let resolution = if ep.intervened {
+                DriftResolution::Intervened
+            } else {
+                DriftResolution::SelfCorrected {
+                    recovery_seconds: duration_seconds,
+                }
+            };
+            let event = DriftEvent {
+                session_id: candidate.id.clone(),
+                target_name: ep.target_name,
+                duration_seconds,
+                resolution,
+                timestamp: now,
+            };
+            let _ = self.session_repo.record_drift(&event);
+        }
+
+        self.session_repo.save(&candidate)?;
+
+        // Atomically clear active session from memory upon persistence success
         self.timer.reset();
         self.in_active_intervention = false;
+        self.current_drift_episode = None;
         self.last_tick_time = None;
-        self.session_repo.save(&session)?;
+        self.active_session = None;
         self.active_workflow = None;
 
-        info!("Completed workflow session '{}'", session.id);
-        Ok(session)
+        info!("Completed workflow session '{}'", candidate.id);
+        Ok(candidate)
     }
 
     /// Evaluates one immediate activity observation against the active workflow rules,
@@ -201,7 +336,7 @@ impl WorkflowService {
     pub fn evaluate_tick(&mut self) -> Result<SessionEvaluation, WorkflowServiceError> {
         let session = self
             .active_session
-            .as_mut()
+            .as_ref()
             .ok_or(WorkflowServiceError::NoActiveSession)?;
 
         let workflow = self
@@ -209,17 +344,39 @@ impl WorkflowService {
             .as_ref()
             .ok_or(WorkflowServiceError::NoActiveSession)?;
 
-        // If session is paused, skip rule evaluation
+        // If session is paused, skip rule evaluation and accumulate paused time accurately (H-09, H-29)
         if session.state == SessionState::Paused {
             let obs = self.source.poll()?;
-            session.total_paused_seconds += (self.poll_interval.as_millis() / 1000).max(1) as u64;
-            self.last_tick_time = Some(std::time::Instant::now());
+            let now_instant = std::time::Instant::now();
+            let elapsed_ms = if let Some(last) = self.last_tick_time {
+                let ms = now_instant.saturating_duration_since(last).as_millis() as u64;
+                if ms == 0 {
+                    self.poll_interval.as_millis() as u64
+                } else {
+                    ms.min(10_000)
+                }
+            } else {
+                self.poll_interval.as_millis() as u64
+            };
+            self.last_tick_time = Some(now_instant);
+
+            let mut candidate = session.clone();
+            self.subsecond_paused_ms += elapsed_ms;
+            let add_secs = self.subsecond_paused_ms / 1000;
+            self.subsecond_paused_ms %= 1000;
+            candidate.total_paused_seconds += add_secs;
+
+            if add_secs > 0 {
+                self.session_repo.save(&candidate)?;
+            }
+            self.active_session = Some(candidate.clone());
+
             return Ok(SessionEvaluation {
                 observation: obs,
                 decision: PolicyDecision::Ignored {
                     reason: "Session is paused".to_string(),
                 },
-                session: session.clone(),
+                session: candidate,
                 pull_back_event: None,
             });
         }
@@ -231,38 +388,115 @@ impl WorkflowService {
 
         let decision = self.engine.evaluate(&obs, workflow, &mut self.timer, now);
 
-        // Check if user just self-corrected from a grace violation back to an allowed context!
+        let mut candidate = session.clone();
         let mut pull_back_event: Option<DriftEvent> = None;
+
+        // Track drift episodes with per-episode duration and seal at intervention (H-30)
+        match &decision {
+            PolicyDecision::GracePeriod { target_name, .. } => {
+                if self.current_drift_episode.is_none() {
+                    self.current_drift_episode = Some(ActiveDriftEpisode {
+                        target_name: target_name.clone(),
+                        started_at: now,
+                        intervened: false,
+                    });
+                }
+            }
+            PolicyDecision::InterventionRequired { target_name, .. } => {
+                if let Some(ref mut ep) = self.current_drift_episode {
+                    if !ep.intervened {
+                        ep.intervened = true;
+                        let duration_secs = now
+                            .signed_duration_since(ep.started_at)
+                            .num_seconds()
+                            .max(1) as u32;
+                        let event = DriftEvent {
+                            session_id: candidate.id.clone(),
+                            target_name: ep.target_name.clone(),
+                            duration_seconds: duration_secs,
+                            resolution: DriftResolution::Intervened,
+                            timestamp: now,
+                        };
+                        self.session_repo.record_drift(&event)?;
+                    }
+                } else {
+                    let ep = ActiveDriftEpisode {
+                        target_name: target_name.clone(),
+                        started_at: now,
+                        intervened: true,
+                    };
+                    let event = DriftEvent {
+                        session_id: candidate.id.clone(),
+                        target_name: ep.target_name.clone(),
+                        duration_seconds: 1,
+                        resolution: DriftResolution::Intervened,
+                        timestamp: now,
+                    };
+                    self.session_repo.record_drift(&event)?;
+                    self.current_drift_episode = Some(ep);
+                }
+            }
+            _ => {}
+        }
+
+        // Check if user just self-corrected from a grace violation back to an allowed context!
         if was_violating && decision.is_allowed() {
             if let Some(res) = self.timer.take_last_resolution() {
                 let target_name = violation_target
                     .unwrap_or_else(|| obs.application.clone().unwrap_or_else(|| "unknown".into()));
                 match res {
                     DriftResolution::SelfCorrected { recovery_seconds } => {
-                        session.pull_back_count += 1;
+                        candidate.pull_back_count += 1;
                         let event = DriftEvent {
-                            session_id: session.id.clone(),
+                            session_id: candidate.id.clone(),
                             target_name,
                             duration_seconds: recovery_seconds,
                             resolution: DriftResolution::SelfCorrected { recovery_seconds },
                             timestamp: now,
                         };
-                        let _ = self.session_repo.record_drift(&event);
+                        // Atomic evaluation persistence: don't discard drift errors (H-08)
+                        self.session_repo.record_drift(&event)?;
                         pull_back_event = Some(event);
+                        self.current_drift_episode = None;
                     }
                     DriftResolution::Intervened => {
-                        let duration_seconds = (session.total_grace_seconds
-                            + session.total_distraction_seconds)
-                            .max(30) as u32;
-                        let event = DriftEvent {
-                            session_id: session.id.clone(),
-                            target_name,
-                            duration_seconds,
-                            resolution: DriftResolution::Intervened,
-                            timestamp: now,
-                        };
-                        let _ = self.session_repo.record_drift(&event);
+                        let already_recorded = self
+                            .current_drift_episode
+                            .as_ref()
+                            .map(|e| e.intervened)
+                            .unwrap_or(false);
+                        if !already_recorded {
+                            let duration_seconds = (candidate.total_grace_seconds
+                                + candidate.total_distraction_seconds)
+                                .max(30) as u32;
+                            let event = DriftEvent {
+                                session_id: candidate.id.clone(),
+                                target_name,
+                                duration_seconds,
+                                resolution: DriftResolution::Intervened,
+                                timestamp: now,
+                            };
+                            self.session_repo.record_drift(&event)?;
+                        }
+                        self.current_drift_episode = None;
                     }
+                }
+            } else if let Some(ep) = self.current_drift_episode.take() {
+                if !ep.intervened {
+                    let recovery_seconds = now
+                        .signed_duration_since(ep.started_at)
+                        .num_seconds()
+                        .max(1) as u32;
+                    candidate.pull_back_count += 1;
+                    let event = DriftEvent {
+                        session_id: candidate.id.clone(),
+                        target_name: ep.target_name,
+                        duration_seconds: recovery_seconds,
+                        resolution: DriftResolution::SelfCorrected { recovery_seconds },
+                        timestamp: now,
+                    };
+                    self.session_repo.record_drift(&event)?;
+                    pull_back_event = Some(event);
                 }
             }
         }
@@ -271,46 +505,58 @@ impl WorkflowService {
             self.in_active_intervention = false;
         }
 
-        // Temporal accounting step
+        // Fractional monotonic temporal accounting (H-29)
         let now_instant = std::time::Instant::now();
-        let tick_secs = if let Some(last) = self.last_tick_time {
-            let elapsed = now_instant.saturating_duration_since(last).as_secs();
-            if elapsed == 0 {
-                (self.poll_interval.as_millis() / 1000).max(1) as u64
+        let elapsed_ms = if let Some(last) = self.last_tick_time {
+            let ms = now_instant.saturating_duration_since(last).as_millis() as u64;
+            if ms == 0 {
+                self.poll_interval.as_millis() as u64
             } else {
-                elapsed
+                ms.min(10_000)
             }
         } else {
-            (self.poll_interval.as_millis() / 1000).max(1) as u64
+            self.poll_interval.as_millis() as u64
         };
-        self.last_tick_time = Some(now_instant);
 
         match &decision {
             PolicyDecision::Allowed { .. } => {
-                session.total_focus_seconds += tick_secs;
+                self.subsecond_focus_ms += elapsed_ms;
+                candidate.total_focus_seconds += self.subsecond_focus_ms / 1000;
+                self.subsecond_focus_ms %= 1000;
             }
             PolicyDecision::GracePeriod { .. } => {
-                session.total_grace_seconds += tick_secs;
+                self.subsecond_grace_ms += elapsed_ms;
+                candidate.total_grace_seconds += self.subsecond_grace_ms / 1000;
+                self.subsecond_grace_ms %= 1000;
             }
             PolicyDecision::InterventionRequired { .. } => {
-                session.total_distraction_seconds += tick_secs;
+                self.subsecond_distraction_ms += elapsed_ms;
+                candidate.total_distraction_seconds += self.subsecond_distraction_ms / 1000;
+                self.subsecond_distraction_ms %= 1000;
                 if !self.in_active_intervention {
-                    session.intervention_count += 1;
+                    candidate.intervention_count += 1;
                     self.in_active_intervention = true;
                 }
             }
             PolicyDecision::Ignored { reason } if reason.contains("AFK") => {
-                session.total_afk_seconds += tick_secs;
+                self.subsecond_afk_ms += elapsed_ms;
+                candidate.total_afk_seconds += self.subsecond_afk_ms / 1000;
+                self.subsecond_afk_ms %= 1000;
             }
             _ => {}
         }
 
-        let _ = self.session_repo.save(session);
+        // Atomic evaluation persistence: persist before updating in-memory state (H-08, H-09)
+        self.session_repo.save(&candidate)?;
+
+        // Only after save succeeds, commit candidate to active in-memory state
+        self.last_tick_time = Some(now_instant);
+        self.active_session = Some(candidate.clone());
 
         Ok(SessionEvaluation {
             observation: obs,
             decision,
-            session: session.clone(),
+            session: candidate,
             pull_back_event,
         })
     }

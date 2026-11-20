@@ -103,6 +103,9 @@ pub enum RepositoryError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    #[error("Corrupt data in storage: {0}")]
+    CorruptData(String),
 }
 
 /// Port for persisting and loading workflow definitions and their policy rules.
@@ -148,4 +151,9 @@ pub trait SessionRepository: Send + Sync {
         &self,
         limit: usize,
     ) -> Result<Vec<crate::domain::WorkflowSession>, RepositoryError>;
+
+    /// Reconciles unclosed active/paused sessions after an unclean shutdown, marking them Interrupted with RFC3339 timestamps.
+    fn recover_interrupted_sessions(&mut self) -> Result<usize, RepositoryError> {
+        Ok(0)
+    }
 }

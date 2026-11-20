@@ -242,9 +242,9 @@ fn main() {
                 _ => CommitmentContract::Standard,
             };
 
-            let wf_id =
-                WorkflowId::new(format!("wf-{}", workflow.to_lowercase().replace(' ', "-")));
-            let mut wf = Workflow::new(wf_id.clone(), workflow.clone());
+            let wf_slug = workflow.to_lowercase().replace(' ', "-");
+            let wf_id = WorkflowId::new(format!("cli-session-{}", wf_slug));
+            let mut wf = Workflow::new(wf_id.clone(), format!("CLI: {}", workflow));
             wf.commitment_contract = contract_enum;
             wf.target_duration_minutes = effective_duration;
             wf.default_grace_period_seconds = 30;

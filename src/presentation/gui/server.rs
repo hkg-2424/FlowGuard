@@ -369,10 +369,10 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let _ = ctx
                 .command_tx
-                .send(super::engine::GuiCommand::StartSession {
-                    workflow_id: WorkflowId::new(req_data.workflow_id),
-                    reply: reply_tx,
-                });
+                .send(super::engine::GuiCommand::start_session(
+                    WorkflowId::new(req_data.workflow_id),
+                    reply_tx,
+                ));
 
             match reply_rx.recv_timeout(Duration::from_secs(3)) {
                 Ok(Ok(sess)) => {
@@ -391,7 +391,7 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let _ = ctx
                 .command_tx
-                .send(super::engine::GuiCommand::PauseSession { reply: reply_tx });
+                .send(super::engine::GuiCommand::pause_session(reply_tx));
 
             match reply_rx.recv_timeout(Duration::from_secs(3)) {
                 Ok(Ok(())) => respond_json(request, 200, r#"{"status":"paused"}"#),
@@ -403,7 +403,7 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let _ = ctx
                 .command_tx
-                .send(super::engine::GuiCommand::ResumeSession { reply: reply_tx });
+                .send(super::engine::GuiCommand::resume_session(reply_tx));
 
             match reply_rx.recv_timeout(Duration::from_secs(3)) {
                 Ok(Ok(())) => respond_json(request, 200, r#"{"status":"resumed"}"#),
@@ -418,10 +418,10 @@ fn handle_request(mut request: Request, ctx: &GuiServerContext) {
                 serde_json::from_str(&body).unwrap_or(StopSessionRequest { reason: None });
 
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-            let _ = ctx.command_tx.send(super::engine::GuiCommand::StopSession {
-                reason: req_data.reason,
-                reply: reply_tx,
-            });
+            let _ = ctx.command_tx.send(super::engine::GuiCommand::stop_session(
+                req_data.reason,
+                reply_tx,
+            ));
 
             match reply_rx.recv_timeout(Duration::from_secs(3)) {
                 Ok(Ok(sess)) => {

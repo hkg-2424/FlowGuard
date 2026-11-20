@@ -100,7 +100,12 @@ impl SessionRepository for SqliteSessionRepository {
             "Completed" => SessionState::Completed,
             "Cancelled" => SessionState::Cancelled,
             "Interrupted" => SessionState::Interrupted,
-            _ => SessionState::Ready,
+            invalid => {
+                return Err(RepositoryError::CorruptData(format!(
+                    "Invalid session state in database for session '{}': {}",
+                    sess_id, invalid
+                )));
+            }
         };
 
         let commitment_contract: CommitmentContract = serde_json::from_str(&contract_json)
@@ -108,11 +113,27 @@ impl SessionRepository for SqliteSessionRepository {
 
         let start_time = DateTime::parse_from_rfc3339(&start_time_str)
             .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+            .map_err(|e| {
+                RepositoryError::CorruptData(format!(
+                    "Invalid RFC3339 start_time '{}' for session '{}': {}",
+                    start_time_str, sess_id, e
+                ))
+            })?;
 
-        let end_time = end_time_str
-            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
+        let end_time = match end_time_str {
+            Some(ref s) => {
+                let dt = DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| {
+                        RepositoryError::CorruptData(format!(
+                            "Invalid RFC3339 end_time '{}' for session '{}': {}",
+                            s, sess_id, e
+                        ))
+                    })?;
+                Some(dt)
+            }
+            None => None,
+        };
 
         Ok(Some(WorkflowSession {
             id: SessionId::new(sess_id),
@@ -246,7 +267,12 @@ impl SessionRepository for SqliteSessionRepository {
 
             let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
                 .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+                .map_err(|e| {
+                    RepositoryError::CorruptData(format!(
+                        "Invalid RFC3339 timestamp '{}' for drift event in session '{}': {}",
+                        timestamp_str, s_id, e
+                    ))
+                })?;
 
             drifts.push(DriftEvent {
                 session_id: SessionId::new(s_id),
@@ -341,7 +367,12 @@ impl SessionRepository for SqliteSessionRepository {
                 "Completed" => SessionState::Completed,
                 "Cancelled" => SessionState::Cancelled,
                 "Interrupted" => SessionState::Interrupted,
-                _ => SessionState::Ready,
+                invalid => {
+                    return Err(RepositoryError::CorruptData(format!(
+                        "Invalid session state in database for session '{}': {}",
+                        sess_id, invalid
+                    )));
+                }
             };
 
             let commitment_contract: CommitmentContract = serde_json::from_str(&contract_json)
@@ -349,11 +380,27 @@ impl SessionRepository for SqliteSessionRepository {
 
             let start_time = DateTime::parse_from_rfc3339(&start_time_str)
                 .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+                .map_err(|e| {
+                    RepositoryError::CorruptData(format!(
+                        "Invalid RFC3339 start_time '{}' for session '{}': {}",
+                        start_time_str, sess_id, e
+                    ))
+                })?;
 
-            let end_time = end_time_str
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+            let end_time = match end_time_str {
+                Some(ref s) => {
+                    let dt = DateTime::parse_from_rfc3339(s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .map_err(|e| {
+                            RepositoryError::CorruptData(format!(
+                                "Invalid RFC3339 end_time '{}' for session '{}': {}",
+                                s, sess_id, e
+                            ))
+                        })?;
+                    Some(dt)
+                }
+                None => None,
+            };
 
             sessions.push(WorkflowSession {
                 id: SessionId::new(sess_id),
@@ -374,5 +421,20 @@ impl SessionRepository for SqliteSessionRepository {
         }
 
         Ok(sessions)
+    }
+
+    fn recover_interrupted_sessions(&mut self) -> Result<usize, RepositoryError> {
+        let conn = self
+            .db
+            .lock()
+            .map_err(|e| RepositoryError::Storage(e.to_string()))?;
+        let now_str = Utc::now().to_rfc3339();
+        let affected = conn
+            .execute(
+                "UPDATE sessions SET state = 'Interrupted', end_time = ?1 WHERE state IN ('Active', 'Paused')",
+                params![now_str],
+            )
+            .map_err(|e| RepositoryError::Storage(e.to_string()))?;
+        Ok(affected)
     }
 }

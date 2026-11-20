@@ -62,6 +62,10 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX IF NOT EXISTS idx_drift_session ON drift_events(session_id);
     "#,
+    // Migration 2: Enforce at most one Active or Paused session across the database (H-13)
+    r#"
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_single_active_session ON sessions((1)) WHERE state IN ('Active', 'Paused');
+    "#,
 ];
 
 /// Applies all pending schema migrations inside an atomic transaction.
@@ -86,9 +90,10 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         if version > current_version {
             let tx = conn.transaction()?;
             tx.execute_batch(sql)?;
+            let now_rfc3339 = chrono::Utc::now().to_rfc3339();
             tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, datetime('now'))",
-                [version],
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                rusqlite::params![version, now_rfc3339],
             )?;
             tx.commit()?;
             info!("Applied FlowGuard SQLite database migration v{}", version);
